@@ -123,12 +123,13 @@ button { cursor: pointer; }
 .todo { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; border-radius: 14px; padding: 9px 12px; transition: background .15s; cursor: pointer; }
 .todo:hover { background: var(--glass-hover); }
 .todo.doing { background: var(--ai-soft); }
-.todo .t { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.todo > .check { grid-column: 1; grid-row: 1; }
+.todo .t { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .todo .t .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo.done .t .title { text-decoration: line-through; color: var(--muted); font-weight: 500; }
 .todo .pri { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .pri.p1 { background: var(--p1); } .pri.p2 { background: var(--p2); } .pri.p3 { background: var(--p3); box-shadow: 0 0 0 3px rgba(255,93,115,.18); }
-.todo .meta { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+.todo .meta { grid-column: 2; grid-row: 2; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
 .todo .meta:empty { display: none; }
 .badge { border-radius: 999px; padding: 1px 8px; background: var(--ink-soft); white-space: nowrap; }
 .badge.due.late { background: rgba(209,52,76,.14); color: var(--danger); font-weight: 600; }
@@ -137,7 +138,7 @@ button { cursor: pointer; }
 .badge.run { color: var(--ai); background: var(--ai-soft); }
 .badge.run.live::before { content: "●"; margin-right: 4px; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
-.todo .ops { grid-row: 1 / span 2; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+.todo .ops { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .todo:hover .ops, .todo:focus-within .ops { opacity: 1; }
 @media (hover: none) { .todo .ops { opacity: 1; } }
 .todo .ops .btn { padding: 3px 10px; font-size: 12.5px; }
