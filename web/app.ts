@@ -224,8 +224,10 @@ function fillDetail(t: Todo) {
 /** Notes are Markdown: rendered until clicked, a textarea while editing, rendered again on blur. */
 function showNotes(mode: "view" | "edit") {
   if (mode === "view" && d.notes.value.trim()) { d.notesView.innerHTML = renderMd(d.notes.value); d.notesView.hidden = false; d.notes.hidden = true; }
-  else { d.notesView.hidden = true; d.notes.hidden = false; }
+  else { d.notesView.hidden = true; d.notes.hidden = false; sizeNotes(); }
 }
+/** The textarea grows with its content, so a long note is read and edited whole; the modal scrolls. */
+function sizeNotes() { d.notes.style.height = "auto"; d.notes.style.height = `${Math.max(84, d.notes.scrollHeight + 2)}px`; }
 d.notesView.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) return; showNotes("edit"); d.notes.focus(); };
 d.notes.onblur = () => showNotes("view");
 function closeDetail() {
@@ -253,7 +255,7 @@ async function flushSave() {
   catch (e) { toast(`保存失败：${(e as Error).message}`); }
 }
 d.title.oninput = () => scheduleSave({ title: d.title.value });
-d.notes.oninput = () => scheduleSave({ notes: d.notes.value });
+d.notes.oninput = () => { sizeNotes(); scheduleSave({ notes: d.notes.value }); };
 d.due.onchange = () => { d.due.dataset.dayOnly = ""; scheduleSave({ due: d.due.value ? d.due.value.slice(0, 16) : null }); };
 d.priority.onchange = () => scheduleSave({ priority: Number(d.priority.value) });
 d.project.onchange = () => scheduleSave({ project: d.project.value.trim() || null });
