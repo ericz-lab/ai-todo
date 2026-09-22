@@ -39,7 +39,7 @@ describe("chat actions", () => {
     expect(extractDrafts("今天先做 #3。").found).toBe(false);
   });
   test("the context lists open tasks with ids and the recent done", () => {
-    const t = (id: number, status: Todo["status"], due: string | null = null): Todo => ({ id, title: `t${id}`, notes: "", status, priority: 0, due, tags: [], project: null, source: "manual", position: id, createdAt: "", updatedAt: "", doneAt: null });
+    const t = (id: number, status: Todo["status"], due: string | null = null): Todo => ({ id, title: `t${id}`, notes: "", status, priority: 0, due, tags: [], project: null, source: "manual", parentId: null, subtasks: { total: 0, done: 0 }, position: id, createdAt: "", updatedAt: "", doneAt: null });
     const ctx = chatContext([t(1, "open", "2026-09-23"), t(2, "doing"), t(3, "done")], { now: new Date("2026-09-22T02:30:00Z"), timezone: "Asia/Shanghai", lang: "zh" });
     expect(ctx.text).toContain("Open tasks (2)");
     expect(ctx.text).toContain("- #1 · t1 · due 2026-09-23");

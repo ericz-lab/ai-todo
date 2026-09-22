@@ -17,7 +17,7 @@ import {
 } from "./ai.ts";
 import { config, databasePath } from "./config.ts";
 import {
-  abandonRuns, addEvent, cleanDraft, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listTodos,
+  abandonRuns, addEvent, cleanDraft, cleanParent, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos,
   openDb, projectCounts, reorderTodos, runningRun, tagCounts, updateTodo,
 } from "./db.ts";
 import type { Action, Draft, Run, Source, Status, Todo } from "./types.ts";
@@ -104,7 +104,7 @@ export function createServer(opts: ServerOptions) {
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
   const startExecution = (todo: Todo, extra: string, timezone: string): Live => {
-    const prompt = executePrompt(todo, { now: now(), timezone, lang, extra });
+    const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id) });
     const run = createRun(db, todo.id, prompt, opts.model || null);
     const l = new Live(run);
     live.set(run.id, l);
@@ -208,7 +208,7 @@ export function createServer(opts: ServerOptions) {
   const widget = () => {
     const todos = listTodos(db, { status: "active", limit: 20 });
     const items = todos.map((t) => ({
-      text: `${t.status === "doing" ? "▶ " : ""}${t.priority === 3 ? "‼ " : t.priority === 2 ? "! " : ""}${t.title}${t.due ? ` · ${t.due.replace("T", " ")}` : ""}`,
+      text: `${t.parentId ? "↳ " : ""}${t.status === "doing" ? "▶ " : ""}${t.priority === 3 ? "‼ " : t.priority === 2 ? "! " : ""}${t.title}${t.due ? ` · ${t.due.replace("T", " ")}` : ""}`,
       url: publicBase ? `${publicBase}/?todo=${t.id}` : undefined,
       time: t.updatedAt,
     }));
@@ -240,7 +240,9 @@ export function createServer(opts: ServerOptions) {
           if (!list.length) return fail("drafts is required");
           if (list.length > 50) return fail("at most 50 drafts at once");
           try {
-            const drafts = list.map(cleanDraft);
+            // `parentId` at the top makes every draft without its own a subtask of that todo.
+            const parentId = cleanParent(b.parentId);
+            const drafts = list.map(cleanDraft).map((d) => (parentId && !d.parentId ? { ...d, parentId } : d));
             const todos = db.transaction(() => drafts.map((d) => createTodo(db, d, source(b.source ?? "ai"))))();
             return json({ ok: true, todos }, 201);
           } catch (e) { return fail((e as Error).message); }
@@ -259,7 +261,8 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => {
           const id = idOf(req.params.id); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
-          return json({ ok: true, todo, events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
+          const parent = todo.parentId ? getTodo(db, todo.parentId) : null;
+          return json({ ok: true, todo, parent, subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
         },
         PATCH: async (req) => {
           const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);

@@ -142,7 +142,7 @@ Rules:
 - Actions only the person can take (pay, send, call, book, sign) are listed under a final heading as a short checklist; say clearly what is done and what is not.
 - Answer in the person's language, in Markdown, concise: lead with the result, then the evidence, then the checklist. No preamble.`;
 
-export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string }): string {
+export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; parent?: Todo | null; subtasks?: Todo[] }): string {
   const lines = [
     `Clock: ${clockLine(opts.now, opts.timezone)}`,
     `Answer language: ${opts.lang}`,
@@ -154,6 +154,8 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
   if (todo.project) lines.push(`Project: ${todo.project}`);
   if (todo.tags.length) lines.push(`Tags: ${todo.tags.join(", ")}`);
   if (todo.notes) lines.push("", "Notes from the person:", todo.notes);
+  if (opts.parent) lines.push("", `This is one step of the larger task: ${opts.parent.title}${opts.parent.notes ? `\nIts notes: ${opts.parent.notes.slice(0, 1000)}` : ""}`);
+  if (opts.subtasks?.length) lines.push("", "Its steps (subtasks):", ...opts.subtasks.map((s) => `- [${s.status === "done" ? "x" : " "}] ${s.title}`));
   if (opts.extra?.trim()) lines.push("", "Instructions for this run:", opts.extra.trim());
   return lines.join("\n");
 }
@@ -164,18 +166,21 @@ export const DRAFTS_FENCE = "todo-drafts";
 export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The person's whole list is given to you before the conversation, with ids. Every message is one of three things; decide which and answer accordingly, briefly, in the person's language.
 
 1. THINGS TO DO. The message is a note of tasks ("明天下午三点前发周报，周五订机票 #出差", a pasted list, a meeting note). Turn it into drafts: one fenced block, language \`${DRAFTS_FENCE}\`, holding a JSON array; the app shows the drafts for the person to check and add. Say nothing else, or one short line at most. Never add these yourself.
-   Draft: {"title": string, "notes": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "priority": 0|1|2|3, "tags": string[], "project": string | null}
+   Draft: {"title": string, "notes": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "priority": 0|1|2|3, "tags": string[], "project": string | null, "parentId"?: N}
    - One draft per distinct task. title: short, imperative, keeps the essential object ("发周报给老板", not "周报"); no date or tags repeated in it.
    - due: resolve relative dates ("明天", "周五", "下周一", "月底", "3 天后") against the clock given; a bare day is "YYYY-MM-DD"; a time of day gives "YYYY-MM-DDTHH:MM"; nothing said means null. Never invent a date.
    - priority: 3 only for 紧急/ASAP/must; 2 for 重要/尽快; 1 for 有空/顺便; else 0.
    - tags: words marked with # and clear categories the text implies; reuse the known tags when they fit; no #. project: a known project it belongs to, else null. notes: details the title does not carry; "" when none.
    - A task already on the list (same thing, by meaning) is not drafted again; mention it with its id instead.
+   - parentId: only when the person says the new items are steps of a task on the list; that task's id.
 
 2. A CHANGE TO THE LIST ("把明天的都推到周五", "3 完成了", "把年终总结拆成三步", "删掉那条买牛奶"). Do it: one fenced block, language \`${ACTIONS_FENCE}\`, holding a JSON array of operations; the app applies them and shows the person what changed. Outside the block, one or two lines saying what you did. Operations:
-   {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…"}  (same fields as a draft)
-   {"op":"update","id":N, …any of title, notes, due, priority, tags, project…}
+   {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…","parentId":N}  (same fields as a draft; parentId makes it a subtask)
+   {"op":"update","id":N, …any of title, notes, due, priority, tags, project, parentId…}  (parentId null takes a subtask out of its parent)
    {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
-   - Only ids from the list. Never delete without being asked; prefer done or update. When splitting a task, add the parts with the same project and tags and update the original's notes or mark it done, as fits.
+   - Only ids from the list. Never delete without being asked; prefer done or update.
+   - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its open subtasks; deleting it deletes them.
+   - Splitting a task ("拆成三步", "拆分"): add each part as a subtask with "parentId" set to the original's id, keeping its project and tags; leave the original open.
    - When the request is ambiguous (which task? which day?), ask instead and put no block.
 
 3. A QUESTION OR A PLAN ("今天先做什么", "这周压着什么", "帮我安排一下"). Answer from the list: short, concrete, ids or titles, ordered. No block.
@@ -195,12 +200,18 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
   };
   const active = todos.filter((t) => t.status === "open" || t.status === "doing");
   const done = todos.filter((t) => t.status === "done").slice(0, 15);
+  // Subtasks follow their parent, indented; one whose parent is not open says whose step it is.
+  const openIds = new Set(active.map((t) => t.id));
+  const tree = active.filter((t) => t.parentId === null || !openIds.has(t.parentId)).flatMap((t) => [
+    line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : t.subtasks.total ? ` (${t.subtasks.done}/${t.subtasks.total} subtasks done)` : ""),
+    ...active.filter((s) => s.parentId === t.id).map((s) => "  " + line(s).replace(/^- /, "↳ ")),
+  ]);
   const text = [
     `Clock: ${clockLine(opts.now, opts.timezone)}`,
     `Answer language: ${opts.lang}`,
     "",
     `Open tasks (${active.length}):`,
-    active.length ? active.map(line).join("\n") : "- (none)",
+    tree.length ? tree.join("\n") : "- (none)",
     "",
     `Recently done (${done.length}):`,
     done.length ? done.map(line).join("\n") : "- (none)",

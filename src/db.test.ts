@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { cleanDraft, cleanDue, cleanTags, createRun, createTodo, deleteTodo, finishRun, listEvents, listRuns, listTodos, openDb, projectCounts, runningRun, tagCounts, updateTodo, abandonRuns } from "./db.ts";
+import { Database } from "bun:sqlite";
+import { cleanDraft, cleanDue, cleanTags, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos, openDb, projectCounts, runningRun, tagCounts, updateTodo, abandonRuns } from "./db.ts";
 
 describe("cleaning", () => {
   test("due accepts a day or a minute, nothing else", () => {
@@ -64,5 +65,55 @@ describe("todos", () => {
     expect(abandonRuns(db)).toBe(1);
     expect(listRuns(db, t.id).map((r) => r.status)).toEqual(["error", "ok"]);
     expect(listEvents(db, t.id).map((e) => e.kind)).toEqual(["run-failed", "run-started", "run-finished", "run-started", "created"]);
+  });
+});
+
+describe("subtasks", () => {
+  test("one level, counted on the parent, listed in order", () => {
+    const db = openDb(":memory:");
+    const p = createTodo(db, { title: "年终总结" });
+    const a = createTodo(db, { title: "收集数据", parentId: p.id }, "chat");
+    const b = createTodo(db, { title: "写初稿", parentId: p.id });
+    expect(a.parentId).toBe(p.id);
+    expect(getTodo(db, p.id)!.subtasks).toEqual({ total: 2, done: 0 });
+    updateTodo(db, a.id, { status: "done" });
+    expect(getTodo(db, p.id)!.subtasks).toEqual({ total: 2, done: 1 });
+    expect(listSubtasks(db, p.id).map((t) => t.id)).toEqual([b.id, a.id]);   // open first
+    expect(listEvents(db, p.id).map((e) => e.kind)).toEqual(["subtask-added", "subtask-added", "created"]);
+    // One level: no subtask of a subtask, no parent becoming a subtask, no self, no missing parent.
+    expect(() => createTodo(db, { title: "x", parentId: a.id })).toThrow(/one level/);
+    const q = createTodo(db, { title: "别的" });
+    expect(() => updateTodo(db, p.id, { parentId: q.id })).toThrow(/has subtasks/);
+    expect(() => updateTodo(db, q.id, { parentId: q.id })).toThrow(/own subtask/);
+    expect(() => createTodo(db, { title: "x", parentId: 999 })).toThrow(/no todo #999/);
+    // Moving in and out.
+    expect(updateTodo(db, q.id, { parentId: p.id })!.parentId).toBe(p.id);
+    expect(updateTodo(db, q.id, { parentId: null })!.parentId).toBeNull();
+  });
+  test("finishing the parent finishes its open steps; deleting it deletes them", () => {
+    const db = openDb(":memory:");
+    const p = createTodo(db, { title: "搬家" });
+    const a = createTodo(db, { title: "打包", parentId: p.id });
+    const b = createTodo(db, { title: "退押金", parentId: p.id });
+    updateTodo(db, a.id, { status: "dropped" });
+    updateTodo(db, p.id, { status: "done" }, "chat");
+    expect(getTodo(db, b.id)!.status).toBe("done");
+    expect(getTodo(db, a.id)!.status).toBe("dropped");                     // only open ones
+    expect(listEvents(db, b.id)[0]!.data).toMatchObject({ source: "chat" });
+    expect(deleteTodo(db, p.id)).toBe(true);
+    expect(getTodo(db, a.id)).toBeNull();
+    expect(getTodo(db, b.id)).toBeNull();
+    expect(listEvents(db, b.id)[0]!.kind).toBe("deleted");
+  });
+  test("a database from before subtasks gets the column on open", () => {
+    const path = `${require("node:os").tmpdir()}/todo-old-${Date.now()}.db`;
+    const old = new Database(path);
+    old.exec("CREATE TABLE todos (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', priority INTEGER NOT NULL DEFAULT 0, due TEXT, tags TEXT NOT NULL DEFAULT '[]', project TEXT, source TEXT NOT NULL DEFAULT 'manual', position INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, done_at TEXT)");
+    old.exec("INSERT INTO todos (title, created_at, updated_at) VALUES ('旧的', '2026-01-01', '2026-01-01')");
+    old.close();
+    const db = openDb(path);
+    const t = listTodos(db)[0]!;
+    expect(t).toMatchObject({ title: "旧的", parentId: null, subtasks: { total: 0, done: 0 } });
+    expect(createTodo(db, { title: "新的", parentId: t.id }).parentId).toBe(t.id);
   });
 });

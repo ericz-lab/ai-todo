@@ -1,13 +1,13 @@
 /**
- * The page: sidebar (views, projects, tags), the AI panel, the grouped list and the detail
- * modal (fields, AI execution runs, history). The AI panel is ai-space's chat widget fed with
+ * The page: sidebar (views, projects, tags), the AI panel, the grouped list (subtasks under
+ * their parent) and the detail modal (fields, subtasks, AI execution runs, history). The AI panel is ai-space's chat widget fed with
  * the whole list: an answer may carry a `todo-drafts` block (rendered as editable drafts the
  * person adds) or a `todo-actions` block (applied by the server, the results listed under the
  * answer).
  */
 
 type Status = "open" | "doing" | "done" | "dropped";
-type Todo = { id: number; title: string; notes: string; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; createdAt: string; updatedAt: string; doneAt: string | null };
+type Todo = { id: number; title: string; notes: string; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
@@ -137,14 +137,25 @@ document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () 
 
 // ---- the list
 type Group = { key: string; title: string; late?: boolean; items: Todo[] };
+/** Subtasks by parent id, among the todos listed; a subtask whose parent is listed is drawn under it, not on its own. */
+let kids = new Map<number, Todo[]>();
+function nest() {
+  const ids = new Set(todos.map((t) => t.id));
+  kids = new Map();
+  for (const t of todos) if (t.parentId && ids.has(t.parentId)) kids.set(t.parentId, [...(kids.get(t.parentId) ?? []), t]);
+  return todos.filter((t) => !t.parentId || !ids.has(t.parentId));
+}
+/** A todo's title by id, from whatever the page has; for the "↳ parent" badge. */
+const titleOf = (id: number) => (todos.find((t) => t.id === id) ?? active.find((t) => t.id === id))?.title;
 function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
-  if (view === "done") return [{ key: "done", title: "已完成", items: todos }];
+  const tops = nest();
+  if (view === "done") return [{ key: "done", title: "已完成", items: tops }];
   const g: Record<string, Group> = {
     doing: { key: "doing", title: "进行中", items: [] }, late: { key: "late", title: "已过期", late: true, items: [] }, today: { key: "today", title: "今天", items: [] },
     tomorrow: { key: "tomorrow", title: "明天", items: [] }, week: { key: "week", title: "本周", items: [] }, later: { key: "later", title: "以后", items: [] }, none: { key: "none", title: "未定日期", items: [] },
   };
-  for (const t of todos) {
+  for (const t of tops) {
     const day = t.due ? dayOf(t.due) : null;
     const key = t.status === "doing" ? "doing" : !day ? "none" : day < today ? "late" : day === today ? "today" : day === tomorrow ? "tomorrow" : day <= week ? "week" : "later";
     g[key]!.items.push(t);
@@ -162,7 +173,7 @@ function renderList() {
   els.list.innerHTML = gs.map((g) => `
     <section class="group glass">
       <div class="group-head${g.late ? " late" : ""}"><h3>${g.title}</h3><b>${g.items.length}</b></div>
-      ${g.items.map(rowHtml).join("")}
+      ${g.items.map((t) => rowHtml(t) + (kids.get(t.id) ?? []).map((k) => rowHtml(k, true)).join("")).join("")}
     </section>`).join("");
   els.list.querySelectorAll<HTMLElement>(".todo").forEach((row) => {
     const id = Number(row.dataset.id);
@@ -172,14 +183,16 @@ function renderList() {
     row.querySelector<HTMLElement>("[data-op=edit]")!.onclick = () => void openDetail(id);
   });
 }
-function rowHtml(t: Todo): string {
+function rowHtml(t: Todo, nested = false): string {
   const meta: string[] = [];
+  if (t.subtasks.total) meta.push(`<span class="badge prog${t.subtasks.done === t.subtasks.total ? " full" : ""}" title="子任务完成 ${t.subtasks.done} / ${t.subtasks.total}">☑ ${t.subtasks.done}/${t.subtasks.total}</span>`);
+  if (t.parentId && !nested) meta.push(`<span class="badge parent" title="子任务，属于 #${t.parentId}">↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}</span>`);
   if (t.due) meta.push(`<span class="badge due${isLate(t) && t.status !== "done" ? " late" : dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`);
   if (t.project) meta.push(`<span class="badge proj">${esc(t.project)}</span>`);
   for (const tag of t.tags) meta.push(`<span class="badge">#${esc(tag)}</span>`);
   if (t.notes) meta.push(`<span title="${esc(t.notes.slice(0, 500))}">≡</span>`);
   if (t.status === "done" && t.doneAt) meta.push(`<span>完成于 ${esc(fmtAgo(t.doneAt))}</span>`);
-  return `<div class="todo ${t.status}" data-id="${t.id}" tabindex="0">
+  return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}" tabindex="0">
     <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""}><span></span></label>
     <div class="t">${t.priority ? `<i class="pri p${t.priority}" title="优先级 ${PRI[t.priority]}"></i>` : ""}<span class="title">${esc(t.title)}</span></div>
     <div class="ops"><button class="btn" data-op="run" title="交给 AI 执行"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button></div>
@@ -199,12 +212,18 @@ const d = {
   done: $<HTMLInputElement>("#d-done"), title: $<HTMLInputElement>("#d-title"), due: $<HTMLInputElement>("#d-due"), priority: $<HTMLSelectElement>("#d-priority"),
   project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), notesView: $("#d-notes-view"), extra: $<HTMLInputElement>("#d-extra"),
   runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"),
+  subsN: $("#d-subs-n"), subsList: $("#d-subs-list"), subAdd: $<HTMLInputElement>("#d-sub-add"), parent: $("#d-parent"),
 };
+let curSubs: Todo[] = [];
+type Detail = { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
 async function openDetail(id: number, execute = false) {
-  const r = await api<{ todo: Todo; events: TodoEvent[]; runs: Run[] }>(`/api/todos/${id}`).catch((e) => { toast((e as Error).message); return null; });
+  // Moving from one todo to another (a subtask, its parent) keeps what was typed in the first.
+  if (cur) { clearTimeout(saveTimer); await flushSave(); liveAbort?.abort(); liveAbort = null; }
+  const r = await api<Detail>(`/api/todos/${id}`).catch((e) => { toast((e as Error).message); return null; });
   if (!r) return;
   cur = r.todo;
   fillDetail(r.todo);
+  renderSubs(r.parent, r.subtasks);
   renderRuns(r.runs);
   renderEvents(r.events);
   els.detail.hidden = false; els.scrim.hidden = false;
@@ -260,9 +279,65 @@ d.due.onchange = () => { d.due.dataset.dayOnly = ""; scheduleSave({ due: d.due.v
 d.priority.onchange = () => scheduleSave({ priority: Number(d.priority.value) });
 d.project.onchange = () => scheduleSave({ project: d.project.value.trim() || null });
 d.tags.onchange = () => scheduleSave({ tags: d.tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
-d.done.onchange = async () => { if (!cur) return; await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) }); toast(d.done.checked ? "已完成" : "已重新打开"); closeDetail(); };
+d.done.onchange = async () => {
+  if (!cur) return;
+  const open = curSubs.filter((s) => s.status === "open" || s.status === "doing").length;
+  await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) });
+  toast(d.done.checked ? (open ? `已完成，连同 ${open} 个子任务` : "已完成") : "已重新打开");
+  closeDetail();
+};
+
+// ---- subtasks in the detail: a parent lists and adds its steps; a subtask shows whose step it is
+function renderSubs(parent: Todo | null, subs: Todo[]) {
+  curSubs = subs;
+  const isSub = !!cur?.parentId;
+  d.parent.hidden = !isSub;
+  $("#d-subs-label").textContent = isSub ? "所属任务" : "子任务";
+  d.subsList.hidden = isSub; d.subAdd.hidden = isSub;
+  const done = subs.filter((s) => s.status === "done").length;
+  d.subsN.textContent = isSub ? "" : subs.length ? `${done}/${subs.length}` : "";
+  if (isSub) {
+    d.parent.innerHTML = `属于 <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button class="btn small" data-op="detach">移出</button>`;
+    $<HTMLElement>("[data-open]", d.parent).onclick = (e) => { e.preventDefault(); void openDetail(cur!.parentId!); };
+    $<HTMLElement>("[data-op=detach]", d.parent).onclick = () => void patchSub(cur!.id, { parentId: null }, "已移出，成为独立任务");
+    return;
+  }
+  d.subsList.innerHTML = subs.map((s) => `
+    <div class="subrow ${s.status}" data-id="${s.id}">
+      <label class="check"><input type="checkbox"${s.status === "done" ? " checked" : ""}><span></span></label>
+      <span class="title">${esc(s.title)}</span>
+      ${s.due ? `<span class="badge due${isLate(s) && s.status !== "done" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
+    </div>`).join("");
+  d.subsList.querySelectorAll<HTMLElement>(".subrow").forEach((row) => {
+    const id = Number(row.dataset.id);
+    $<HTMLInputElement>("input", row).onchange = (e) => void patchSub(id, { status: (e.target as HTMLInputElement).checked ? "done" : "open" });
+    $<HTMLElement>(".title", row).onclick = () => void openDetail(id);
+  });
+}
+async function patchSub(id: number, patch: Record<string, unknown>, note?: string) {
+  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify(patch) }); await refreshSubs(); if (note) toast(note); }
+  catch (e) { toast((e as Error).message); }
+}
+async function refreshSubs() {
+  if (!cur) return;
+  const r = await api<Detail>(`/api/todos/${cur.id}`);
+  cur = r.todo; renderSubs(r.parent, r.subtasks); renderEvents(r.events);
+}
+d.subAdd.onkeydown = async (e) => {
+  if (e.key !== "Enter" || e.isComposing || !cur) return;
+  const title = d.subAdd.value.trim();
+  if (!title) return;
+  d.subAdd.disabled = true;
+  try {
+    // A step keeps its task's project and tags, as the AI's splits do.
+    await api("/api/todos", { method: "POST", body: JSON.stringify({ title, parentId: cur.id, project: cur.project, tags: cur.tags }) });
+    d.subAdd.value = "";
+    await refreshSubs();
+  } catch (err) { toast((err as Error).message); }
+  finally { d.subAdd.disabled = false; d.subAdd.focus(); }
+};
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
-$("#d-delete").onclick = async () => { if (!cur || !confirm(`删除「${cur.title}」？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
+$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
 
 function renderRuns(runs: Run[]) {
   d.runs.innerHTML = runs.map(runHtml).join("");
@@ -276,7 +351,7 @@ function runHtml(r: Run): string {
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", dropped: "放弃", deleted: "删除", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = { created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";

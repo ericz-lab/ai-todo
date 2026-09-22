@@ -15,6 +15,10 @@ export type Todo = {
   tags: string[];
   project: string | null;
   source: Source;
+  /** The todo this one is a step of; one level only, a subtask has no subtasks. */
+  parentId: number | null;
+  /** How many subtasks it has and how many are done; zeros for a todo without any. */
+  subtasks: { total: number; done: number };
   position: number;
   createdAt: string;
   updatedAt: string;
@@ -29,9 +33,11 @@ export type Draft = {
   priority?: Priority;
   tags?: string[];
   project?: string | null;
+  /** Make it a subtask of this todo. */
+  parentId?: number | null;
 };
 
-export type Patch = Partial<Pick<Todo, "title" | "notes" | "status" | "priority" | "due" | "tags" | "project">>;
+export type Patch = Partial<Pick<Todo, "title" | "notes" | "status" | "priority" | "due" | "tags" | "project" | "parentId">>;
 
 /** One line of a todo's history; appended, never rewritten. */
 export type TodoEvent = { id: number; todoId: number; kind: string; data: Record<string, unknown>; at: string };

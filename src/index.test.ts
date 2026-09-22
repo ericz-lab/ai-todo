@@ -138,6 +138,26 @@ describe("service", () => {
     expect(((await j(`/api/todos/${todo.id}`)).body.todo as Todo).status).toBe("done");
     expect((await j("/api/ai/apply", { method: "POST", body: JSON.stringify({}) })).status).toBe(400);
   });
+  test("subtasks: created in bulk under a parent, shown with it, split by the chat", async () => {
+    const p = (await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "年终总结", tags: ["工作"] }) })).body.todo as Todo;
+    const bulk = await j("/api/todos/bulk", { method: "POST", body: JSON.stringify({ parentId: p.id, drafts: [{ title: "收集数据" }, { title: "写初稿" }] }) });
+    expect((bulk.body.todos as Todo[]).map((t) => t.parentId)).toEqual([p.id, p.id]);
+    const detail = (await j(`/api/todos/${p.id}`)).body;
+    expect((detail.todo as Todo).subtasks).toEqual({ total: 2, done: 0 });
+    expect((detail.subtasks as Todo[]).map((t) => t.title)).toEqual(["收集数据", "写初稿"]);
+    const child = (detail.subtasks as Todo[])[0]!;
+    expect(((await j(`/api/todos/${child.id}`)).body.parent as Todo).id).toBe(p.id);
+    expect((await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "x", parentId: child.id }) })).status).toBe(400);
+    const ctx = String((await j("/api/ai/context?timezone=Asia/Shanghai")).body.text);
+    expect(ctx).toContain(`- #${p.id} · 年终总结 · #工作 (0/2 subtasks done)\n  ↳ #${child.id} · 收集数据`);
+    const text = `拆好了。\n\n\`\`\`todo-actions\n[{"op":"add","title":"定稿","parentId":${p.id}}]\n\`\`\``;
+    const r = await j("/api/ai/apply", { method: "POST", body: JSON.stringify({ text }) });
+    expect((r.body.results as { todo: Todo }[])[0]!.todo.parentId).toBe(p.id);
+    // Execute sees the steps of the task it is given.
+    await sse(await fetch(`${base}/api/todos/${p.id}/execute`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+    const prompt = String(calls.filter((c) => c.body.tag === "execute").at(-1)!.body.prompt);
+    expect(prompt).toContain("Its steps (subtasks):\n- [ ] 收集数据\n- [ ] 写初稿\n- [ ] 定稿");
+  });
   test("drafts in a chat answer are cleaned for the preview", async () => {
     const r = await j("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: "```todo-drafts\n[{\"title\":\"a\",\"due\":\"2026-10-01\"},{\"due\":\"x\"}]\n```" }) });
     expect(r.body).toEqual({ ok: true, drafts: [{ title: "a", notes: "", due: "2026-10-01", priority: 0, tags: [], project: null }], rejected: 1, found: true });

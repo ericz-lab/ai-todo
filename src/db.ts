@@ -50,8 +50,18 @@ export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+  // Subtasks came later: a database from before them gets the column on open.
+  const cols = db.query("PRAGMA table_info(todos)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "parent_id")) db.exec("ALTER TABLE todos ADD COLUMN parent_id INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS todos_parent ON todos(parent_id)");
   return db;
 }
+
+/** Every read of todos goes through this, so each row carries its subtask counts. */
+const SELECT_TODOS = `SELECT todos.*,
+  (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id) AS sub_total,
+  (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id AND c.status = 'done') AS sub_done
+  FROM todos`;
 
 type Row = Record<string, unknown>;
 const now = () => new Date().toISOString();
@@ -66,6 +76,8 @@ const toTodo = (r: Row): Todo => ({
   tags: JSON.parse(r.tags as string) as string[],
   project: (r.project as string | null) ?? null,
   source: r.source as Source,
+  parentId: (r.parent_id as number | null) ?? null,
+  subtasks: { total: (r.sub_total as number | undefined) ?? 0, done: (r.sub_done as number | undefined) ?? 0 },
   position: r.position as number,
   createdAt: r.created_at as string,
   updatedAt: r.updated_at as string,
@@ -120,9 +132,17 @@ export function cleanStatus(v: unknown): Status {
   if (!STATUSES.includes(s as Status)) throw new Error(`status must be one of ${STATUSES.join(", ")}, got ${s}`);
   return s as Status;
 }
+/** A parent reference: null for none, else a positive id; whether it may be a parent is checked on write. */
+export function cleanParent(v: unknown): number | null {
+  if (v === null || v === undefined || v === "" || v === 0) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`parentId must be a todo id, got ${String(v)}`);
+  return n;
+}
 export function cleanDraft(v: unknown): Draft {
   const d = (v ?? {}) as Record<string, unknown>;
-  return { title: cleanTitle(d.title), notes: cleanNotes(d.notes), due: cleanDue(d.due), priority: cleanPriority(d.priority), tags: cleanTags(d.tags), project: cleanProject(d.project) };
+  const parentId = cleanParent(d.parentId);
+  return { title: cleanTitle(d.title), notes: cleanNotes(d.notes), due: cleanDue(d.due), priority: cleanPriority(d.priority), tags: cleanTags(d.tags), project: cleanProject(d.project), ...(parentId ? { parentId } : {}) };
 }
 export function cleanPatch(v: unknown): Patch {
   const p = (v ?? {}) as Record<string, unknown>;
@@ -134,6 +154,7 @@ export function cleanPatch(v: unknown): Patch {
   if ("due" in p) out.due = cleanDue(p.due);
   if ("tags" in p) out.tags = cleanTags(p.tags);
   if ("project" in p) out.project = cleanProject(p.project);
+  if ("parentId" in p) out.parentId = cleanParent(p.parentId);
   return out;
 }
 
@@ -150,7 +171,7 @@ export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
   if (f.q) { where.push("(title LIKE ? OR notes LIKE ? OR tags LIKE ? OR project LIKE ?)"); const like = `%${f.q}%`; args.push(like, like, like, like); }
   if (f.tag) { where.push("tags LIKE ?"); args.push(`%${JSON.stringify(f.tag)}%`); }
   if (f.project) { where.push("project = ?"); args.push(f.project); }
-  const sql = `SELECT * FROM todos ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+  const sql = `${SELECT_TODOS} ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'open' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
       CASE WHEN status IN ('done','dropped') THEN updated_at END DESC,
       CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, priority DESC, position, id
@@ -160,8 +181,24 @@ export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
 }
 
 export function getTodo(db: Database, id: number): Todo | null {
-  const r = db.query("SELECT * FROM todos WHERE id = ?").get(id) as Row | null;
+  const r = db.query(`${SELECT_TODOS} WHERE id = ?`).get(id) as Row | null;
   return r ? toTodo(r) : null;
+}
+
+/** The subtasks of a todo, every status: open ones first, then in the order they were made. */
+export function listSubtasks(db: Database, parentId: number): Todo[] {
+  return (db.query(`${SELECT_TODOS} WHERE parent_id = ?
+    ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'open' THEN 1 WHEN 'done' THEN 2 ELSE 3 END, position, id`).all(parentId) as Row[]).map(toTodo);
+}
+
+/** A todo may become a subtask of `parentId` when that todo exists, is not itself a subtask, and is not the todo; a todo with subtasks stays on top. */
+function checkParent(db: Database, parentId: number | null | undefined, childId?: number): void {
+  if (parentId == null) return;
+  if (childId !== undefined && parentId === childId) throw new Error("a todo cannot be its own subtask");
+  const parent = db.query("SELECT parent_id FROM todos WHERE id = ?").get(parentId) as { parent_id: number | null } | null;
+  if (!parent) throw new Error(`no todo #${parentId} to be the parent`);
+  if (parent.parent_id != null) throw new Error(`#${parentId} is itself a subtask; subtasks go one level deep`);
+  if (childId !== undefined && (db.query("SELECT 1 FROM todos WHERE parent_id = ? LIMIT 1").get(childId))) throw new Error(`#${childId} has subtasks of its own and cannot become one`);
 }
 
 export function addEvent(db: Database, todoId: number, kind: string, data: Record<string, unknown> = {}, at = now()): TodoEvent {
@@ -175,13 +212,15 @@ export function listEvents(db: Database, todoId: number, limit = 100): TodoEvent
 export function createTodo(db: Database, draft: Draft, source: Source = "manual", origin: Record<string, unknown> = {}): Todo {
   if (!SOURCES.includes(source)) throw new Error(`bad source ${source}`);
   const d = cleanDraft(draft);
+  checkParent(db, d.parentId);
   const t = now();
   const pos = ((db.query("SELECT COALESCE(MAX(position), 0) AS m FROM todos").get() as { m: number }).m) + 1;
-  const r = db.query(`INSERT INTO todos (title, notes, status, priority, due, tags, project, source, position, created_at, updated_at)
-    VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
-    .get(d.title, d.notes ?? "", d.priority ?? 0, d.due ?? null, JSON.stringify(d.tags ?? []), d.project ?? null, source, pos, t, t) as Row;
+  const r = db.query(`INSERT INTO todos (title, notes, status, priority, due, tags, project, source, parent_id, position, created_at, updated_at)
+    VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+    .get(d.title, d.notes ?? "", d.priority ?? 0, d.due ?? null, JSON.stringify(d.tags ?? []), d.project ?? null, source, d.parentId ?? null, pos, t, t) as Row;
   const todo = toTodo(r);
-  addEvent(db, todo.id, "created", { source, ...origin }, t);
+  addEvent(db, todo.id, "created", { source, ...(todo.parentId ? { parentId: todo.parentId } : {}), ...origin }, t);
+  if (todo.parentId) addEvent(db, todo.parentId, "subtask-added", { source, id: todo.id, title: todo.title }, t);
   return todo;
 }
 
@@ -189,6 +228,7 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
   const before = getTodo(db, id);
   if (!before) return null;
   const p = cleanPatch(patch);
+  if ("parentId" in p) checkParent(db, p.parentId, id);
   const changed: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(p)) {
     const old = before[k as keyof Patch];
@@ -198,18 +238,28 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
   const t = now();
   const next = { ...before, ...p };
   const doneAt = next.status === "done" ? (before.status === "done" ? before.doneAt : t) : null;
-  db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, updated_at = ?, done_at = ? WHERE id = ?`)
-    .run(next.title, next.notes, next.status, next.priority, next.due, JSON.stringify(next.tags), next.project, t, doneAt, id);
-  const kind = "status" in changed ? String(next.status) : "edited";
-  addEvent(db, id, kind, { source, changed }, t);
+  db.transaction(() => {
+    db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, parent_id = ?, updated_at = ?, done_at = ? WHERE id = ?`)
+      .run(next.title, next.notes, next.status, next.priority, next.due, JSON.stringify(next.tags), next.project, next.parentId, t, doneAt, id);
+    const kind = "status" in changed ? String(next.status) : "edited";
+    addEvent(db, id, kind, { source, changed }, t);
+    // Finishing a todo finishes its steps still open; each gets its own history line.
+    if (changed.status && next.status === "done") {
+      for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing") updateTodo(db, sub.id, { status: "done" }, source);
+    }
+  })();
   return getTodo(db, id);
 }
 
+/** Deleting a todo deletes its subtasks with it; every one leaves a `deleted` line. */
 export function deleteTodo(db: Database, id: number, source: Source = "manual"): boolean {
   const before = getTodo(db, id);
   if (!before) return false;
-  db.query("DELETE FROM todos WHERE id = ?").run(id);
-  addEvent(db, id, "deleted", { source, title: before.title });
+  db.transaction(() => {
+    for (const sub of listSubtasks(db, id)) deleteTodo(db, sub.id, source);
+    db.query("DELETE FROM todos WHERE id = ?").run(id);
+    addEvent(db, id, "deleted", { source, title: before.title, ...(before.parentId ? { parentId: before.parentId } : {}) });
+  })();
   return true;
 }
 

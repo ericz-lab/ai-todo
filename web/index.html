@@ -71,6 +71,12 @@
       <button class="btn small" id="d-doing">开始做</button>
       <button class="btn small danger" id="d-delete">删除</button>
     </div>
+    <div class="subs" id="d-subs">
+      <div class="subs-head"><span class="sub" id="d-subs-label">子任务</span><b id="d-subs-n"></b><div class="grow"></div></div>
+      <div id="d-parent" class="d-parent" hidden></div>
+      <div id="d-subs-list" class="subs-list"></div>
+      <input id="d-sub-add" class="d-sub-add" placeholder="＋ 添加子任务，回车确认" maxlength="300" autocomplete="off">
+    </div>
     <div class="runs" id="d-runs"></div>
     <details class="history"><summary class="sub">历史</summary><div id="d-events" class="events"></div></details>
   </div>

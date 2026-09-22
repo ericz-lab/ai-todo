@@ -2,8 +2,9 @@
  * Command line over the running service, for the `planner` agent and for the shell:
  *   bun src/cli.ts list [--all|--done] [--q text] [--tag t] [--project p]
  *   bun src/cli.ts show <id>
- *   bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text]
- *   bun src/cli.ts done <id> | start <id> | reopen <id> | rm <id>
+ *   bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text] [--parent id]
+ *   bun src/cli.ts done <id> | start <id> | reopen <id> | rm <id>      (done and rm take the subtasks along)
+ *   bun src/cli.ts move <id> <parent-id|none>   make it a subtask of another todo, or take it out
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
  *   bun src/cli.ts execute <id> [--extra text]   hand the todo to the AI, print the result
  * The base URL is TODO_URL, else http://127.0.0.1:${PORT:-8970}.
@@ -23,8 +24,8 @@ const call = async (path: string, init: RequestInit = {}) => {
   if (!r.ok || body.ok === false) die(`failed: ${body.error ?? `HTTP ${r.status}`}`);
   return body;
 };
-type Todo = { id: number; title: string; status: string; priority: number; due: string | null; tags: string[]; project: string | null; notes: string; source: string; createdAt: string; doneAt: string | null };
-const line = (t: Todo) => `#${t.id}\t${t.status}\t${t.due ?? "-"}\t${"!".repeat(t.priority) || "-"}\t${t.title}${t.project ? ` @${t.project}` : ""}${t.tags.length ? ` ${t.tags.map((x) => `#${x}`).join(" ")}` : ""}`;
+type Todo = { id: number; title: string; status: string; priority: number; due: string | null; tags: string[]; project: string | null; notes: string; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; doneAt: string | null };
+const line = (t: Todo, indent = "") => `#${t.id}\t${t.status}\t${t.due ?? "-"}\t${"!".repeat(t.priority) || "-"}\t${indent}${t.title}${t.subtasks?.total ? ` [${t.subtasks.done}/${t.subtasks.total}]` : ""}${t.project ? ` @${t.project}` : ""}${t.tags.length ? ` ${t.tags.map((x) => `#${x}`).join(" ")}` : ""}`;
 
 try {
   switch (cmd) {
@@ -33,13 +34,21 @@ try {
       for (const k of ["q", "tag", "project"]) if (flags[k]) q.set(k, flags[k]!);
       const { todos } = (await call(`/api/todos?${q}`)) as { todos: Todo[] };
       if (!todos.length) console.log("(none)");
-      for (const t of todos) console.log(line(t));
+      // Subtasks under their parent when both are listed; a subtask alone names its parent.
+      const ids = new Set(todos.map((t) => t.id));
+      for (const t of todos) {
+        if (t.parentId && ids.has(t.parentId)) continue;
+        console.log(line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : ""));
+        for (const s of todos) if (s.parentId === t.id) console.log(line(s, "  ↳ "));
+      }
       break;
     }
     case "show": {
       const id = Number(args[0]); if (!id) die("usage: show <id>");
-      const r = (await call(`/api/todos/${id}`)) as { todo: Todo; events: { kind: string; at: string; data: Record<string, unknown> }[]; runs: { id: number; status: string; startedAt: string; output: string; error: string | null }[] };
+      const r = (await call(`/api/todos/${id}`)) as { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: { kind: string; at: string; data: Record<string, unknown> }[]; runs: { id: number; status: string; startedAt: string; output: string; error: string | null }[] };
       console.log(line(r.todo));
+      if (r.parent) console.log(`subtask of ${line(r.parent)}`);
+      if (r.subtasks.length) { console.log("\nsubtasks:"); for (const s of r.subtasks) console.log(line(s, "  ↳ ")); }
       if (r.todo.notes) console.log(`\n${r.todo.notes}`);
       console.log(`\ncreated ${r.todo.createdAt} (${r.todo.source})${r.todo.doneAt ? `, done ${r.todo.doneAt}` : ""}`);
       for (const run of r.runs) console.log(`\n--- run ${run.id} ${run.status} ${run.startedAt}${run.error ? ` (${run.error})` : ""}\n${run.output}`);
@@ -47,8 +56,15 @@ try {
     }
     case "add": {
       const title = args.join(" ").trim(); if (!title) die("usage: add <title> [--due ...] [--priority n] [--tags a,b] [--project p] [--notes text]");
-      const { todo } = (await call("/api/todos", { method: "POST", body: JSON.stringify({ title, due: flags.due || null, priority: flags.priority ?? 0, tags: flags.tags ?? [], project: flags.project || null, notes: flags.notes ?? "", source: "cli" }) })) as { todo: Todo };
+      const { todo } = (await call("/api/todos", { method: "POST", body: JSON.stringify({ title, due: flags.due || null, priority: flags.priority ?? 0, tags: flags.tags ?? [], project: flags.project || null, notes: flags.notes ?? "", parentId: flags.parent ? Number(flags.parent) : null, source: "cli" }) })) as { todo: Todo };
       console.log(line(todo));
+      break;
+    }
+    case "move": {
+      const id = Number(args[0]); const to = args[1];
+      if (!id || !to) die("usage: move <id> <parent-id|none>");
+      const { todo } = (await call(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ parentId: to === "none" ? null : Number(to), source: "cli" }) })) as { todo: Todo };
+      console.log(line(todo) + (todo.parentId ? ` (subtask of #${todo.parentId})` : ""));
       break;
     }
     case "done": case "start": case "reopen": {
@@ -94,7 +110,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done] [--q text] [--tag t] [--project p] | show <id> | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] | done <id> | start <id> | reopen <id> | rm <id> | parse <text> | execute <id> [--extra text]");
+      console.log("usage: list [--all|--done] [--q text] [--tag t] [--project p] | show <id> | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
   }
 } catch (e) {
   die((e as Error).message);
