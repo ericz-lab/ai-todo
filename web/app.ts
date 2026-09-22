@@ -5,7 +5,6 @@
  * person adds) or a `todo-actions` block (applied by the server, the results listed under the
  * answer).
  */
-import { esc, renderMd } from "./md.ts";
 
 type Status = "open" | "doing" | "done" | "dropped";
 type Todo = { id: number; title: string; notes: string; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; createdAt: string; updatedAt: string; doneAt: string | null };
@@ -15,7 +14,10 @@ type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: 
 type ChatMessage = { id: number; role: "user" | "assistant"; content: string; error?: string; live?: boolean };
 type ChatContext = { system?: string; text?: string; ack?: string; tools?: string[]; model?: string; thinking?: number };
 type ChatWidget = { fill(text: string): void; send(text: string): Promise<void>; destroy(): void };
+/** ai-space's chat widget, loaded from /space/chat/widget.js; it also exports the Markdown renderer the space uses everywhere. */
 declare const SpaceChat: {
+  renderMd(src: string): string;
+  esc(s: unknown): string;
   mount(el: HTMLElement, opts: {
     scope: string; context: () => Promise<ChatContext>; timeoutMs?: number;
     presets?: { label: string; prompt: string; send?: boolean }[];
@@ -26,6 +28,9 @@ declare const SpaceChat: {
 } | undefined;
 
 const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document): T => root.querySelector(sel) as T;
+const esc = (s: unknown): string => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+/** Markdown through the space's renderer; plain paragraphs when the widget (and so ai-space) is not there. */
+const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? SpaceChat.renderMd(src) : String(src ?? "").split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join(""));
 const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) } });
   const body = (await r.json()) as T & { ok?: boolean; error?: string };
@@ -192,7 +197,7 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let liveAbort: AbortController | null = null;
 const d = {
   done: $<HTMLInputElement>("#d-done"), title: $<HTMLInputElement>("#d-title"), due: $<HTMLInputElement>("#d-due"), priority: $<HTMLSelectElement>("#d-priority"),
-  project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), extra: $<HTMLInputElement>("#d-extra"),
+  project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), notesView: $("#d-notes-view"), extra: $<HTMLInputElement>("#d-extra"),
   runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"),
 };
 async function openDetail(id: number, execute = false) {
@@ -214,7 +219,15 @@ function fillDetail(t: Todo) {
   d.due.dataset.dayOnly = t.due && t.due.length === 10 ? "1" : "";
   d.priority.value = String(t.priority); d.project.value = t.project ?? ""; d.tags.value = t.tags.join(", "); d.notes.value = t.notes;
   d.doing.textContent = t.status === "doing" ? "暂停" : "开始做";
+  showNotes(t.notes ? "view" : "edit");
 }
+/** Notes are Markdown: rendered until clicked, a textarea while editing, rendered again on blur. */
+function showNotes(mode: "view" | "edit") {
+  if (mode === "view" && d.notes.value.trim()) { d.notesView.innerHTML = renderMd(d.notes.value); d.notesView.hidden = false; d.notes.hidden = true; }
+  else { d.notesView.hidden = true; d.notes.hidden = false; }
+}
+d.notesView.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) return; showNotes("edit"); d.notes.focus(); };
+d.notes.onblur = () => showNotes("view");
 function closeDetail() {
   if (!cur) return;
   clearTimeout(saveTimer); void flushSave();

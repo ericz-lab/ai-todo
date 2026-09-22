@@ -62,7 +62,8 @@
       <label>标签<input id="d-tags" placeholder="逗号分隔" autocomplete="off"></label>
       <datalist id="project-list"></datalist>
     </div>
-    <textarea id="d-notes" class="d-notes" placeholder="备注、链接、子步骤…" spellcheck="false"></textarea>
+    <div id="d-notes-view" class="d-notes-view md" title="点击编辑" hidden></div>
+    <textarea id="d-notes" class="d-notes" placeholder="备注，支持 Markdown：链接、列表、子步骤…" spellcheck="false"></textarea>
     <div class="d-actions">
       <button class="btn primary" id="d-execute"><span class="spark">✦</span> AI 执行</button>
       <input id="d-extra" class="d-extra" placeholder="给这次执行的补充说明（可选）" autocomplete="off">

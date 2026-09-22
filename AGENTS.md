@@ -30,7 +30,7 @@ src/db.ts            * schema, cleaning of drafts/patches, todos, events, runs
 src/types.ts           data model
 src/config.ts          environment
 src/cli.ts             the CLI the planner agent uses
-web/index.html         the page shell; app.ts the logic; styles.css the glass; md.ts Markdown
+web/index.html         the page shell; app.ts the logic; styles.css the glass
 agents/planner.md      system prompt of the `planner` agent; planner.svg its avatar
 skills/todo/SKILL.md   the skill ai-space links into the workspace: the list from any agent session
 deploy/app.service     user-level systemd unit template (@DIR@ substituted)
@@ -69,5 +69,6 @@ Fill in once live: host, workspace path, unit name, port, deploy command, public
 - The widget script must be loaded with a script element created at runtime; a static `<script src="/space/chat/widget.js">` is resolved at build time by Bun's HTML import and fails.
 - A todo row is a CSS grid; the ops column has an explicit `grid-column`, otherwise its fixed `grid-row` makes the auto-placer put it first.
 - `renderAssistant` runs before `onReply` finishes: the applied-actions list is created empty in the render and filled from the apply result by message id.
+- Markdown (notes, AI runs) is rendered by the space's own renderer, `SpaceChat.renderMd` from the chat widget the page already loads; there is no copy of it here. Without ai-space the page falls back to escaped paragraphs.
 - Nodes returned from `renderAssistant` land inside the widget's shadow root: the page stylesheet does not apply there, only inherited custom properties do, so the draft cards carry their own `<style>` (`INNER_CSS`).
 - Drafts already added are remembered per browser (`localStorage` `todo-added`, message ids) so a reloaded thread does not offer them again; another browser will.
