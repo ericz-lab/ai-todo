@@ -1,0 +1,46 @@
+# ai-space app manifest. Contract: ai-space docs/app-spec.md (spec 1).
+
+spec: 1
+name: ai-todo
+title: Todo
+description: A todo list with an AI entry. Free text becomes tasks with dates, priorities and tags; a task can be handed to the AI to do; the chat reads the whole list and edits it.
+icon: icon.svg
+url: /?lang={lang}
+status: active
+repo: https://github.com/ericz-lab/ai-todo.git
+i18n:
+  zh:
+    title: AI 待办
+    description: 带 AI 入口的待办清单：随手写的一段话解析成带日期、优先级和标签的任务；任务可以交给 AI 执行；对话能读整张清单并直接修改。
+    agents:
+      planner: { title: 规划师, description: 从命令行读清单、加任务、标完成，帮你安排一天。 }
+    widgets:
+      next: { title: 待办 · 接下来 }
+
+# The app's own process. ai-space hands over PORT; the process binds 127.0.0.1 only.
+service:
+  command: bun src/index.ts
+  port: 8970
+  health: /healthz
+
+# Chat identity on the panel: reads and changes the list through the CLI.
+agents:
+  - name: planner
+    title: Planner
+    description: Reads the list, adds tasks, marks them done and plans the day through the CLI.
+    avatar: agents/planner.svg
+    prompt: agents/planner.md
+    tools: [Read, Grep, Glob, "Bash(bun src/cli.ts *)"]
+
+# Panel card: what is due next.
+widgets:
+  - name: next
+    title: Todo · Next
+    kind: items
+    source: /api/widget
+    link: /
+    size: 2x1
+    refresh: 2m
+
+storage:
+  database: sqlite
