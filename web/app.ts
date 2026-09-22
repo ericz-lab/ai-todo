@@ -226,7 +226,7 @@ function showNotes(mode: "view" | "edit") {
   if (mode === "view" && d.notes.value.trim()) { d.notesView.innerHTML = renderMd(d.notes.value); d.notesView.hidden = false; d.notes.hidden = true; }
   else { d.notesView.hidden = true; d.notes.hidden = false; sizeNotes(); }
 }
-/** The textarea grows with its content, so a long note is read and edited whole; the modal scrolls. */
+/** The textarea grows with its content up to the viewport cap in CSS; past that it scrolls inside. */
 function sizeNotes() { d.notes.style.height = "auto"; d.notes.style.height = `${Math.max(84, d.notes.scrollHeight + 2)}px`; }
 d.notesView.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) return; showNotes("edit"); d.notes.focus(); };
 d.notes.onblur = () => showNotes("view");

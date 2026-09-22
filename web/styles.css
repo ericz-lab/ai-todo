@@ -154,9 +154,9 @@ button { cursor: pointer; }
 .d-meta label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .d-meta input, .d-meta select { border: 1px solid var(--hairline); background: var(--glass); border-radius: 10px; padding: 5px 10px; font-size: 13.5px; outline: none; color: var(--text); min-width: 120px; }
 .d-meta input:focus, .d-meta select:focus { border-color: var(--ai); }
-.d-notes { width: 100%; min-height: 84px; max-height: none; resize: vertical; border: 1px solid var(--hairline); border-radius: 14px; background: var(--glass); padding: 10px 12px; outline: none; font-size: 14px; line-height: 1.6; }
+.d-notes { width: 100%; min-height: 84px; max-height: max(200px, calc(100dvh - 380px)); resize: vertical; border: 1px solid var(--hairline); border-radius: 14px; background: var(--glass); padding: 10px 12px; outline: none; font-size: 14px; line-height: 1.6; }
 .d-notes:focus { border-color: var(--ai); }
-.d-notes-view { border: 1px solid transparent; border-radius: 14px; background: var(--glass); padding: 10px 12px; font-size: 14px; font-weight: 400; cursor: text; }
+.d-notes-view { border: 1px solid transparent; border-radius: 14px; background: var(--glass); padding: 10px 12px; font-size: 14px; font-weight: 400; cursor: text; max-height: max(200px, calc(100dvh - 380px)); overflow-y: auto; }
 .d-notes-view:hover { border-color: var(--hairline); }
 .d-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .d-extra { flex: 1; min-width: 180px; border: 1px solid var(--hairline); background: transparent; border-radius: 999px; padding: 6px 12px; font-size: 13px; outline: none; }
