@@ -16,9 +16,9 @@
       <button class="icon-btn theme" id="theme" title="切换亮暗模式">🌙</button>
     </div>
     <nav class="views" id="views">
-      <button class="view on" data-view="today"><span>今天</span><b id="n-today"></b></button>
+      <button class="view on" data-view="all"><span>全部</span><b id="n-all"></b></button>
+      <button class="view" data-view="today"><span>今天</span><b id="n-today"></b></button>
       <button class="view" data-view="upcoming"><span>即将</span><b id="n-upcoming"></b></button>
-      <button class="view" data-view="all"><span>全部</span><b id="n-all"></b></button>
       <button class="view" data-view="done"><span>已完成</span><b id="n-done"></b></button>
     </nav>
     <div class="side-section"><span class="sub">项目</span><div class="chips" id="projects"></div></div>
@@ -27,19 +27,24 @@
   </aside>
 
   <main class="main" id="main">
-    <section class="ai glass" id="ai">
-      <div class="ai-head">
-        <button class="icon-btn ai-only" id="menu" title="视图 / 筛选">☰</button>
-        <span class="spark">✦</span><span class="ai-title">AI</span>
-        <span class="sub">写下要做的事、让它改清单、或问它今天先做什么</span>
-        <div class="grow"></div>
-        <button class="icon-btn" id="ai-fold" title="收起 / 展开">︿</button>
-      </div>
-      <div class="ai-body" id="chat"></div>
-    </section>
-
+    <div class="main-head">
+      <button class="icon-btn ai-only" id="menu" title="视图 / 筛选">☰</button>
+      <span class="main-title" id="view-title">全部</span>
+      <div class="grow"></div>
+      <button class="btn small ai-only" id="ai-toggle"><span class="spark">✦</span> AI</button>
+    </div>
     <section class="list-wrap" id="list"></section>
   </main>
+
+  <aside class="rail glass" id="rail">
+    <div class="ai-head">
+      <span class="spark">✦</span><span class="ai-title">AI</span>
+      <span class="sub">写下要做的事、让它改清单、或问它今天先做什么</span>
+      <div class="grow"></div>
+      <button class="icon-btn ai-only" id="ai-close">✕</button>
+    </div>
+    <div class="ai-body" id="chat"></div>
+  </aside>
 </div>
 
 <div class="scrim" id="scrim" hidden></div>

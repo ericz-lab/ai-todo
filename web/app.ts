@@ -84,14 +84,14 @@ $("#theme").onclick = () => applyTheme(document.documentElement.dataset.theme ==
 
 // ---- state
 type View = "today" | "upcoming" | "all" | "done";
-let view: View = "today";
+let view: View = "all";
 let filterTag: string | null = null;
 let filterProject: string | null = null;
 let todos: Todo[] = [];
 let active: Todo[] = [];
 let tags: { tag: string; n: number }[] = [];
 let projects: { project: string; n: number }[] = [];
-const els = { list: $("#list"), side: $("#side"), scrim: $("#scrim"), chat: $("#chat"), ai: $("#ai"), detail: $("#detail") };
+const els = { list: $("#list"), side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail") };
 
 async function load() {
   const status = view === "done" ? "done" : "active";
@@ -128,7 +128,8 @@ function renderSide() {
   $("#projects").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; void load(); }; });
   $("#tags").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; void load(); }; });
 }
-document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; closeDrawers(); void load(); }; });
+const VIEW_TITLE: Record<View, string> = { today: "今天", upcoming: "即将", all: "全部", done: "已完成" };
+document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; $("#view-title").textContent = VIEW_TITLE[view]; closeDrawers(); void load(); }; });
 
 // ---- the list
 type Group = { key: string; title: string; late?: boolean; items: Todo[] };
@@ -150,7 +151,7 @@ function groups(): Group[] {
 function renderList() {
   const gs = groups();
   if (!gs.length) {
-    const hint = view === "today" ? "今天没有安排。在上面写下要做的事，或看看「即将」。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。写点什么，让 AI 拆成任务。";
+    const hint = view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
     els.list.innerHTML = `<div class="empty glass"><b>${view === "done" ? "空" : "轻松"}</b>${hint}</div>`;
     return;
   }
@@ -465,14 +466,10 @@ async function mountChat() {
     },
   });
 }
-let folded = false;
-try { folded = localStorage.getItem("todo-ai-folded") === "1"; } catch { /* private mode */ }
-const applyFold = () => { els.ai.classList.toggle("folded", folded); $("#ai-fold").textContent = folded ? "﹀" : "︿"; };
-applyFold();
-$("#ai-fold").onclick = () => { folded = !folded; try { localStorage.setItem("todo-ai-folded", folded ? "1" : "0"); } catch { /* private mode */ } applyFold(); };
-
 // ---- drawers (narrow screens)
-function closeDrawers() { els.side.classList.remove("open"); if (els.detail.hidden) els.scrim.hidden = true; }
+function closeDrawers() { els.rail.classList.remove("open"); els.side.classList.remove("open"); if (els.detail.hidden) els.scrim.hidden = true; }
+$("#ai-toggle").onclick = () => { els.rail.classList.add("open"); els.scrim.hidden = false; };
+$("#ai-close").onclick = closeDrawers;
 $("#menu").onclick = () => { els.side.classList.add("open"); els.scrim.hidden = false; };
 
 // ---- boot
