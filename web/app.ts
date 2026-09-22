@@ -128,8 +128,7 @@ function renderSide() {
   $("#projects").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; void load(); }; });
   $("#tags").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; void load(); }; });
 }
-const VIEW_TITLE: Record<View, string> = { today: "今天", upcoming: "即将", all: "全部", done: "已完成" };
-document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; $("#view-title").textContent = VIEW_TITLE[view]; closeDrawers(); void load(); }; });
+document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; closeDrawers(); void load(); }; });
 
 // ---- the list
 type Group = { key: string; title: string; late?: boolean; items: Todo[] };
