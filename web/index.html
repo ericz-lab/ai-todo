@@ -27,45 +27,19 @@
   </aside>
 
   <main class="main" id="main">
-    <section class="capture glass">
-      <div class="capture-head">
-        <span class="spark">✦</span>
-        <span class="capture-title">AI 入口</span>
-        <span class="sub">写下任何要做的事，AI 解析成任务；也能直接添加一条</span>
+    <section class="ai glass" id="ai">
+      <div class="ai-head">
         <button class="icon-btn ai-only" id="menu" title="视图 / 筛选">☰</button>
-        <button class="icon-btn ai-only" id="ai-toggle" title="AI 对话">✦</button>
-      </div>
-      <textarea id="capture" rows="2" placeholder="例如：明天下午三点前把周报发给老板；周五之前订去上海的机票 #出差；周末整理书房，顺便把旧书挂闲鱼…" spellcheck="false"></textarea>
-      <div class="capture-bar">
-        <span class="sub" id="capture-hint">⌘/Ctrl + Enter 解析 · Enter 换行</span>
+        <span class="spark">✦</span><span class="ai-title">AI</span>
+        <span class="sub">写下要做的事、让它改清单、或问它今天先做什么</span>
         <div class="grow"></div>
-        <button class="btn" id="add-plain">直接添加</button>
-        <button class="btn primary" id="parse"><span class="spark">✦</span> AI 解析</button>
+        <button class="icon-btn" id="ai-fold" title="收起 / 展开">︿</button>
       </div>
-    </section>
-
-    <section class="drafts glass" id="drafts" hidden>
-      <div class="drafts-head">
-        <span class="capture-title">解析结果</span><span class="sub" id="drafts-sub"></span>
-        <div class="grow"></div>
-        <button class="btn small" id="drafts-cancel">取消</button>
-        <button class="btn primary small" id="drafts-add">全部加入</button>
-      </div>
-      <div id="drafts-list" class="drafts-list"></div>
+      <div class="ai-body" id="chat"></div>
     </section>
 
     <section class="list-wrap" id="list"></section>
   </main>
-
-  <aside class="rail glass" id="rail">
-    <div class="rail-head">
-      <span class="spark">✦</span><span class="capture-title">AI 对话</span>
-      <span class="sub">读得到整张清单，能替你改</span>
-      <div class="grow"></div>
-      <button class="icon-btn ai-only" id="ai-close">✕</button>
-    </div>
-    <div class="rail-body" id="chat"></div>
-  </aside>
 </div>
 
 <div class="scrim" id="scrim" hidden></div>

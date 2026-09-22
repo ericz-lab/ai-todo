@@ -138,6 +138,11 @@ describe("service", () => {
     expect(((await j(`/api/todos/${todo.id}`)).body.todo as Todo).status).toBe("done");
     expect((await j("/api/ai/apply", { method: "POST", body: JSON.stringify({}) })).status).toBe(400);
   });
+  test("drafts in a chat answer are cleaned for the preview", async () => {
+    const r = await j("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: "```todo-drafts\n[{\"title\":\"a\",\"due\":\"2026-10-01\"},{\"due\":\"x\"}]\n```" }) });
+    expect(r.body).toEqual({ ok: true, drafts: [{ title: "a", notes: "", due: "2026-10-01", priority: 0, tags: [], project: null }], rejected: 1, found: true });
+    expect((await j("/api/ai/drafts", { method: "POST", body: JSON.stringify({}) })).status).toBe(400);
+  });
   test("the chat proxy forwards with the app token and never cookies", async () => {
     const r = await fetch(`${base}/space/chat/threads?scope=todo`, { headers: { cookie: "session=1" } });
     expect(r.status).toBe(200);

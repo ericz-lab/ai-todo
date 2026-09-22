@@ -159,17 +159,28 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
 }
 
 export const ACTIONS_FENCE = "todo-actions";
+export const DRAFTS_FENCE = "todo-drafts";
 
-export const CHAT_SYSTEM = `You are the assistant inside a todo app. The person's whole list is given to you before the conversation, with ids. Help them plan, prioritise, split, reschedule and clear tasks; answer briefly in their language.
-You may change the list. To do so, put one fenced block in your answer, language \`${ACTIONS_FENCE}\`, holding a JSON array of operations; the app applies them and shows the person what changed. Operations:
-  {"op":"add","title":"…","due":"YYYY-MM-DD"|"YYYY-MM-DDTHH:MM"|null,"priority":0|1|2|3,"tags":[…],"project":"…"|null,"notes":"…"}
-  {"op":"update","id":N, …any of title, notes, due, priority, tags, project…}
-  {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
-Rules:
-- Only ids from the list. Never delete without being asked; prefer done or update.
-- Resolve relative dates against the clock given. Never invent a date the person did not imply.
-- Outside the block, tell the person in one or two lines what you did or propose; when you only propose, put no block.
-- When asked to split a task, add the parts with the same project and tags and mark the original done or update its notes, as fits.`;
+export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The person's whole list is given to you before the conversation, with ids. Every message is one of three things; decide which and answer accordingly, briefly, in the person's language.
+
+1. THINGS TO DO. The message is a note of tasks ("明天下午三点前发周报，周五订机票 #出差", a pasted list, a meeting note). Turn it into drafts: one fenced block, language \`${DRAFTS_FENCE}\`, holding a JSON array; the app shows the drafts for the person to check and add. Say nothing else, or one short line at most. Never add these yourself.
+   Draft: {"title": string, "notes": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "priority": 0|1|2|3, "tags": string[], "project": string | null}
+   - One draft per distinct task. title: short, imperative, keeps the essential object ("发周报给老板", not "周报"); no date or tags repeated in it.
+   - due: resolve relative dates ("明天", "周五", "下周一", "月底", "3 天后") against the clock given; a bare day is "YYYY-MM-DD"; a time of day gives "YYYY-MM-DDTHH:MM"; nothing said means null. Never invent a date.
+   - priority: 3 only for 紧急/ASAP/must; 2 for 重要/尽快; 1 for 有空/顺便; else 0.
+   - tags: words marked with # and clear categories the text implies; reuse the known tags when they fit; no #. project: a known project it belongs to, else null. notes: details the title does not carry; "" when none.
+   - A task already on the list (same thing, by meaning) is not drafted again; mention it with its id instead.
+
+2. A CHANGE TO THE LIST ("把明天的都推到周五", "3 完成了", "把年终总结拆成三步", "删掉那条买牛奶"). Do it: one fenced block, language \`${ACTIONS_FENCE}\`, holding a JSON array of operations; the app applies them and shows the person what changed. Outside the block, one or two lines saying what you did. Operations:
+   {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…"}  (same fields as a draft)
+   {"op":"update","id":N, …any of title, notes, due, priority, tags, project…}
+   {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
+   - Only ids from the list. Never delete without being asked; prefer done or update. When splitting a task, add the parts with the same project and tags and update the original's notes or mark it done, as fits.
+   - When the request is ambiguous (which task? which day?), ask instead and put no block.
+
+3. A QUESTION OR A PLAN ("今天先做什么", "这周压着什么", "帮我安排一下"). Answer from the list: short, concrete, ids or titles, ordered. No block.
+
+Never put both blocks in one answer. Dates outside a block are written as the person would say them.`;
 
 /** What the model reads before every chat turn: the list, with ids, grouped by state. */
 export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; lang: string }): { system: string; text: string; ack: string } {
@@ -194,23 +205,37 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     `Recently done (${done.length}):`,
     done.length ? done.map(line).join("\n") : "- (none)",
   ].join("\n");
-  return { system: CHAT_SYSTEM, text, ack: "I have the list. What would you like to do with it?" };
+  return { system: CHAT_SYSTEM, text, ack: "I have the list. Tell me what to do, what to add, or ask about it." };
 }
 
-/** The operations in a chat answer's `todo-actions` block; none when there is no block. Bad elements are dropped, the rest survive. */
-export function extractActions(text: string): { actions: Action[]; rejected: number } {
-  const re = new RegExp("```" + ACTIONS_FENCE + "\\s*\\n([\\s\\S]*?)```", "g");
-  const actions: Action[] = [];
+/** The elements of every fenced JSON array of the given language in a chat answer, cleaned one by one; bad ones are counted, the rest survive. */
+function extractFenced<T>(text: string, fence: string, clean: (el: unknown) => T): { items: T[]; rejected: number; found: boolean } {
+  const re = new RegExp("```" + fence + "[ \\t]*\\r?\\n([\\s\\S]*?)```", "g");
+  const items: T[] = [];
   let rejected = 0;
+  let found = false;
   for (const m of text.matchAll(re)) {
+    found = true;
     let arr: unknown;
     try { arr = JSON.parse(m[1]!.trim()); } catch { rejected++; continue; }
     if (!Array.isArray(arr)) { rejected++; continue; }
     for (const el of arr) {
-      try { actions.push(cleanAction(el)); } catch { rejected++; }
+      try { items.push(clean(el)); } catch { rejected++; }
     }
   }
-  return { actions: actions.slice(0, 50), rejected };
+  return { items: items.slice(0, 50), rejected, found };
+}
+
+/** The operations in a chat answer's `todo-actions` block; none when there is no block. */
+export function extractActions(text: string): { actions: Action[]; rejected: number } {
+  const { items, rejected } = extractFenced(text, ACTIONS_FENCE, cleanAction);
+  return { actions: items, rejected };
+}
+
+/** The drafts in a chat answer's `todo-drafts` block; `found` tells a block from an answer without one. */
+export function extractDrafts(text: string): { drafts: Draft[]; rejected: number; found: boolean } {
+  const { items, rejected, found } = extractFenced(text, DRAFTS_FENCE, cleanDraft);
+  return { drafts: items, rejected, found };
 }
 
 export function cleanAction(v: unknown): Action {
@@ -225,7 +250,7 @@ export function cleanAction(v: unknown): Action {
   }
 }
 
-/** A chat answer without its actions block, for display. */
-export function stripActions(text: string): string {
-  return text.replace(new RegExp("```" + ACTIONS_FENCE + "\\s*\\n[\\s\\S]*?```\\s*", "g"), "").trim();
+/** A chat answer without its blocks, for display. */
+export function stripBlocks(text: string): string {
+  return text.replace(new RegExp("```(?:" + ACTIONS_FENCE + "|" + DRAFTS_FENCE + ")[ \\t]*\\r?\\n[\\s\\S]*?```\\s*", "g"), "").trim();
 }

@@ -1,8 +1,9 @@
 /**
- * The page: sidebar (views, projects, tags), the AI capture box with its draft preview, the
- * grouped list, the detail modal (fields, AI execution runs, history) and the chat rail, which
- * is ai-space's chat widget fed with the whole list and allowed to change it through the
- * `todo-actions` block the server validates and applies.
+ * The page: sidebar (views, projects, tags), the AI panel, the grouped list and the detail
+ * modal (fields, AI execution runs, history). The AI panel is ai-space's chat widget fed with
+ * the whole list: an answer may carry a `todo-drafts` block (rendered as editable drafts the
+ * person adds) or a `todo-actions` block (applied by the server, the results listed under the
+ * answer).
  */
 import { esc, renderMd } from "./md.ts";
 
@@ -90,10 +91,7 @@ let todos: Todo[] = [];
 let active: Todo[] = [];
 let tags: { tag: string; n: number }[] = [];
 let projects: { project: string; n: number }[] = [];
-const els = {
-  list: $("#list"), capture: $<HTMLTextAreaElement>("#capture"), captureBox: $(".capture"), drafts: $("#drafts"), draftsList: $("#drafts-list"),
-  side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail"),
-};
+const els = { list: $("#list"), side: $("#side"), scrim: $("#scrim"), chat: $("#chat"), ai: $("#ai"), detail: $("#detail") };
 
 async function load() {
   const status = view === "done" ? "done" : "active";
@@ -187,76 +185,6 @@ async function setStatus(id: number, status: Status) {
   try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
   catch (e) { toast((e as Error).message); }
 }
-
-// ---- capture: AI parse or plain add
-async function parse() {
-  const text = els.capture.value.trim();
-  if (!text) { els.capture.focus(); return; }
-  els.captureBox.classList.add("busy");
-  $("#capture-hint").textContent = "AI 正在解析…";
-  try {
-    const r = await api<{ drafts: Draft[] }>("/api/ai/parse", { method: "POST", body: JSON.stringify({ text, timezone: TZ }) });
-    if (!r.drafts.length) { toast("没解析出任务；可以改成「直接添加」"); return; }
-    showDrafts(r.drafts);
-  } catch (e) { toast(`解析失败：${(e as Error).message}`); }
-  finally { els.captureBox.classList.remove("busy"); $("#capture-hint").textContent = "⌘/Ctrl + Enter 解析 · Enter 换行"; }
-}
-async function addPlain() {
-  const lines = els.capture.value.split("\n").map((s) => s.trim()).filter(Boolean);
-  if (!lines.length) { els.capture.focus(); return; }
-  try {
-    await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts: lines.map((title) => ({ title })), source: "manual" }) });
-    els.capture.value = ""; toast(`已添加 ${lines.length} 项`); await load();
-  } catch (e) { toast((e as Error).message); }
-}
-$("#parse").onclick = () => void parse();
-$("#add-plain").onclick = () => void addPlain();
-els.capture.onkeydown = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void parse(); } };
-els.capture.oninput = () => { els.capture.style.height = "auto"; els.capture.style.height = `${Math.min(els.capture.scrollHeight, innerHeight * 0.4)}px`; };
-
-function showDrafts(drafts: Draft[]) {
-  els.drafts.hidden = false;
-  $("#drafts-sub").textContent = `${drafts.length} 项，可以先改再加入`;
-  els.draftsList.innerHTML = drafts.map((d, i) => `
-    <div class="draft" data-i="${i}">
-      <label class="check"><input type="checkbox" checked><span></span></label>
-      <input class="title" value="${esc(d.title)}" maxlength="300">
-      <div class="fields">
-        <input class="due" type="datetime-local" value="${esc(d.due ? (d.due.length > 10 ? d.due : `${d.due}T09:00`) : "")}" title="截止（清空即无日期）">
-        <select class="priority">${PRI.map((p, n) => `<option value="${n}"${(d.priority ?? 0) === n ? " selected" : ""}>${n ? `优先级 ${p}` : "无优先级"}</option>`).join("")}</select>
-        <input class="project" placeholder="项目" value="${esc(d.project ?? "")}" list="project-list">
-        <input class="tags" placeholder="标签，逗号分隔" value="${esc((d.tags ?? []).join(", "))}">
-      </div>
-      ${d.notes ? `<textarea class="notes" rows="1">${esc(d.notes)}</textarea>` : `<textarea class="notes" rows="1" placeholder="备注" hidden></textarea>`}
-    </div>`).join("");
-  els.draftsList.querySelectorAll<HTMLInputElement>(".draft input[type=checkbox]").forEach((c) => { c.onchange = () => c.closest(".draft")!.classList.toggle("off", !c.checked); });
-  // A due the model gave as a bare day keeps the day only unless the person picks a time.
-  els.draftsList.querySelectorAll<HTMLElement>(".draft").forEach((el, i) => { el.dataset.dayOnly = drafts[i]!.due && drafts[i]!.due!.length === 10 ? "1" : ""; $<HTMLInputElement>(".due", el).onchange = () => { el.dataset.dayOnly = ""; }; });
-  els.drafts.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-function readDrafts(): Draft[] {
-  const out: Draft[] = [];
-  els.draftsList.querySelectorAll<HTMLElement>(".draft").forEach((el) => {
-    if (!$<HTMLInputElement>("input[type=checkbox]", el).checked) return;
-    const title = $<HTMLInputElement>(".title", el).value.trim();
-    if (!title) return;
-    const raw = $<HTMLInputElement>(".due", el).value;
-    const due = !raw ? null : el.dataset.dayOnly ? raw.slice(0, 10) : raw.slice(0, 16);
-    out.push({ title, due, priority: Number($<HTMLSelectElement>(".priority", el).value), project: $<HTMLInputElement>(".project", el).value.trim() || null,
-      tags: $<HTMLInputElement>(".tags", el).value.split(/[,，]/).map((s) => s.trim()).filter(Boolean), notes: $<HTMLTextAreaElement>(".notes", el).value.trim() });
-  });
-  return out;
-}
-$("#drafts-cancel").onclick = () => { els.drafts.hidden = true; els.draftsList.innerHTML = ""; };
-$("#drafts-add").onclick = async () => {
-  const drafts = readDrafts();
-  if (!drafts.length) { toast("没有选中的任务"); return; }
-  try {
-    await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) });
-    els.drafts.hidden = true; els.draftsList.innerHTML = ""; els.capture.value = ""; els.capture.style.height = "";
-    toast(`已加入 ${drafts.length} 项`); await load();
-  } catch (e) { toast((e as Error).message); }
-};
 
 // ---- detail modal
 let cur: Todo | null = null;
@@ -402,9 +330,101 @@ async function* sse(body: ReadableStream<Uint8Array>): AsyncIterable<{ event: st
 }
 d.execute.onclick = () => void runExecute();
 
-// ---- the chat rail
-const ACTIONS_RE = /```todo-actions\s*\n[\s\S]*?```\s*/g;
+// ---- the AI panel
+const FENCE_RE = /```todo-(drafts|actions)[ \t]*\r?\n[\s\S]*?```\s*/g;
+const hasBlock = (text: string, kind: "drafts" | "actions") => new RegExp("```todo-" + kind + "[ \\t]*\\r?\\n").test(text);
+/** Styles for what this page puts inside the widget's shadow root; the page stylesheet does not reach there, the tokens do. */
+const INNER_CSS = `
+.drafts { margin: 8px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+.draft { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start; border-radius: 12px; padding: 8px 10px; background: var(--glass-strong); border: 1px solid var(--glass-border); }
+.draft.off { opacity: .45; }
+.draft input, .draft select, .draft textarea { font: inherit; color: inherit; }
+.draft input[type=checkbox] { margin: 4px 0 0; accent-color: var(--ai); }
+.draft .title { border: 0; background: transparent; outline: none; font-weight: 700; font-size: 14px; width: 100%; }
+.draft .fields { grid-column: 2; display: flex; gap: 5px; flex-wrap: wrap; }
+.draft .fields input, .draft .fields select { border: 1px solid var(--hairline); background: transparent; border-radius: 8px; padding: 1px 7px; font-size: 12px; color: var(--muted); outline: none; }
+.draft .fields input:focus { border-color: var(--ai); }
+.draft .due { width: 165px; } .draft .project { width: 100px; } .draft .tags { width: 140px; }
+.draft .notes { grid-column: 2; border: 0; background: transparent; outline: none; font-size: 12.5px; color: var(--muted); resize: vertical; min-height: 18px; }
+.bar { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.bar .n { font-size: 12.5px; color: var(--muted); }
+.btn { border-radius: 999px; padding: 5px 14px; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text); }
+.btn.primary { background: var(--ai); color: var(--on-ai); border-color: transparent; }
+.btn:disabled { opacity: .5; cursor: default; }
+.applied { margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.applied li { list-style: none; padding: 3px 10px; border-radius: 8px; background: var(--ai-soft); color: var(--ai); }
+.applied li.bad { background: rgba(209,52,76,.12); color: var(--danger); }
+.done-note { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+`;
 const appliedNotes = new Map<number, HTMLElement>();
+let added = new Set<number>();
+try { added = new Set(JSON.parse(localStorage.getItem("todo-added") ?? "[]") as number[]); } catch { /* private mode */ }
+const rememberAdded = (id: number) => { added.add(id); try { localStorage.setItem("todo-added", JSON.stringify([...added].slice(-200))); } catch { /* private mode */ } };
+
+const el = (html: string): HTMLElement => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild as HTMLElement; };
+const draftCard = (d: Draft) => el(`
+  <div class="draft">
+    <input type="checkbox" checked>
+    <input class="title" value="${esc(d.title)}" maxlength="300">
+    <div class="fields">
+      <input class="due" type="datetime-local" value="${esc(d.due ? (d.due.length > 10 ? d.due : `${d.due}T09:00`) : "")}" title="截止（清空即无日期）">
+      <select class="priority">${PRI.map((p, n) => `<option value="${n}"${(d.priority ?? 0) === n ? " selected" : ""}>${n ? `优先级 ${p}` : "无优先级"}</option>`).join("")}</select>
+      <input class="project" placeholder="项目" value="${esc(d.project ?? "")}">
+      <input class="tags" placeholder="标签，逗号分隔" value="${esc((d.tags ?? []).join(", "))}">
+    </div>
+    <textarea class="notes" rows="1" placeholder="备注">${esc(d.notes ?? "")}</textarea>
+  </div>`);
+const readDraft = (card: HTMLElement): Draft | null => {
+  if (!$<HTMLInputElement>("input[type=checkbox]", card).checked) return null;
+  const title = $<HTMLInputElement>(".title", card).value.trim();
+  if (!title) return null;
+  const raw = $<HTMLInputElement>(".due", card).value;
+  return { title, due: !raw ? null : card.dataset.dayOnly ? raw.slice(0, 10) : raw.slice(0, 16), priority: Number($<HTMLSelectElement>(".priority", card).value),
+    project: $<HTMLInputElement>(".project", card).value.trim() || null, tags: $<HTMLInputElement>(".tags", card).value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+    notes: $<HTMLTextAreaElement>(".notes", card).value.trim() };
+};
+
+/** An answer with drafts: the text, then editable cards and an add button; the cards come from the server's cleaning. */
+function renderDrafts(m: ChatMessage): Node {
+  const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><div class="drafts"></div></div>`);
+  const list = $(".drafts", wrap);
+  if (added.has(m.id)) { list.replaceWith(el(`<div class="done-note">这些任务已经加入清单。</div>`)); return wrap; }
+  void api<{ drafts: Draft[]; rejected: number }>("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: m.content }) }).then((r) => {
+    if (!r.drafts.length) { list.replaceWith(el(`<div class="done-note">没有可用的任务草稿。</div>`)); return; }
+    for (const d of r.drafts) {
+      const card = draftCard(d);
+      card.dataset.dayOnly = d.due && d.due.length === 10 ? "1" : "";
+      $<HTMLInputElement>(".due", card).onchange = () => { card.dataset.dayOnly = ""; };
+      $<HTMLInputElement>("input[type=checkbox]", card).onchange = (e) => card.classList.toggle("off", !(e.target as HTMLInputElement).checked);
+      list.appendChild(card);
+    }
+    const bar = el(`<div class="bar"><span class="n">${r.drafts.length} 项，可以先改再加入${r.rejected ? `（${r.rejected} 项无法识别）` : ""}</span><button class="btn primary">加入清单</button></div>`);
+    $<HTMLButtonElement>("button", bar).onclick = async (e) => {
+      const btn = e.currentTarget as HTMLButtonElement;
+      const drafts = [...list.querySelectorAll<HTMLElement>(".draft")].map(readDraft).filter((d): d is Draft => !!d);
+      if (!drafts.length) { toast("没有选中的任务"); return; }
+      btn.disabled = true;
+      try {
+        await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) });
+        rememberAdded(m.id);
+        list.replaceWith(el(`<div class="done-note">已加入 ${drafts.length} 项。</div>`));
+        toast(`已加入 ${drafts.length} 项`);
+        await load();
+      } catch (err) { btn.disabled = false; toast((err as Error).message); }
+    };
+    list.appendChild(bar);
+  }).catch((e) => { list.replaceWith(el(`<div class="done-note">草稿读取失败：${esc((e as Error).message)}</div>`)); });
+  return wrap;
+}
+
+/** An answer with operations: the text and the list of what the server did (filled in by onReply). */
+function renderActions(m: ChatMessage): Node {
+  const n = (m.content.match(/"op"\s*:/g) ?? []).length;
+  const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><ul class="applied"><li>清单操作 ${n} 项</li></ul></div>`);
+  appliedNotes.set(m.id, $("ul", wrap));
+  return wrap;
+}
+
 let widgetLoaded: Promise<void> | null = null;
 const loadWidget = (): Promise<void> => {
   widgetLoaded ??= new Promise<void>((resolve, reject) => {
@@ -418,32 +438,21 @@ const loadWidget = (): Promise<void> => {
   return widgetLoaded;
 };
 async function mountChat() {
-  try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sub rail-off">AI 对话组件没有加载（ai-space 不可达）。解析和执行也需要它。</div>`; return; }
+  try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sub ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
   SpaceChat!.mount(els.chat, {
     scope: "todo", theme: "auto", lang: "zh", attachments: false, timeoutMs: 300_000,
-    context: async () => { const c = await api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`); return c; },
-    placeholder: "问它今天做什么，或者让它改清单…",
-    emptyText: "它读得到整张清单。可以问「今天先做什么」，也可以说「把明天的都推到周五」「把写年终总结拆成三步」，它会直接改清单并告诉你改了什么。",
+    context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`),
+    placeholder: "写下要做的事，或者「把明天的都推到周五」「今天先做什么」…",
+    emptyText: "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。",
     presets: [
       { label: "今日计划", prompt: "根据截止时间和优先级，给我今天的执行顺序，简短。", send: true },
       { label: "整理优先级", prompt: "看一遍清单，把明显紧急或重要的调整优先级，并说明理由。", send: true },
       { label: "拆分任务", prompt: "把这个任务拆成可执行的步骤：", send: false },
       { label: "一周回顾", prompt: "根据最近完成的任务，用三句话总结这一周，并指出还压着的事。", send: true },
     ],
-    renderAssistant: (m) => {
-      if (!ACTIONS_RE.test(m.content)) return undefined;
-      ACTIONS_RE.lastIndex = 0;
-      const wrap = document.createElement("div");
-      wrap.innerHTML = renderMd(m.content.replace(ACTIONS_RE, "").trim());
-      const ul = document.createElement("ul"); ul.className = "applied";
-      const n = (m.content.match(/"op"\s*:/g) ?? []).length;
-      ul.innerHTML = `<li>清单操作 ${n} 项</li>`;
-      wrap.appendChild(ul);
-      appliedNotes.set(m.id, ul);
-      return wrap;
-    },
+    renderAssistant: (m) => (hasBlock(m.content, "drafts") ? renderDrafts(m) : hasBlock(m.content, "actions") ? renderActions(m) : undefined),
     onReply: async (m) => {
-      if (!/```todo-actions/.test(m.content)) return;
+      if (!hasBlock(m.content, "actions")) return;
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
         const ul = appliedNotes.get(m.id);
@@ -456,11 +465,14 @@ async function mountChat() {
     },
   });
 }
+let folded = false;
+try { folded = localStorage.getItem("todo-ai-folded") === "1"; } catch { /* private mode */ }
+const applyFold = () => { els.ai.classList.toggle("folded", folded); $("#ai-fold").textContent = folded ? "﹀" : "︿"; };
+applyFold();
+$("#ai-fold").onclick = () => { folded = !folded; try { localStorage.setItem("todo-ai-folded", folded ? "1" : "0"); } catch { /* private mode */ } applyFold(); };
 
 // ---- drawers (narrow screens)
-function closeDrawers() { els.rail.classList.remove("open"); els.side.classList.remove("open"); if (els.detail.hidden) els.scrim.hidden = true; }
-$("#ai-toggle").onclick = () => { els.rail.classList.add("open"); els.scrim.hidden = false; };
-$("#ai-close").onclick = closeDrawers;
+function closeDrawers() { els.side.classList.remove("open"); if (els.detail.hidden) els.scrim.hidden = true; }
 $("#menu").onclick = () => { els.side.classList.add("open"); els.scrim.hidden = false; };
 
 // ---- boot

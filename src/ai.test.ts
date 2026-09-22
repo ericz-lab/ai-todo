@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chatContext, clockLine, draftsFromAnswer, extractActions, extractJsonArray, parsePrompt, stripActions } from "./ai.ts";
+import { chatContext, clockLine, draftsFromAnswer, extractActions, extractDrafts, extractJsonArray, parsePrompt, stripBlocks } from "./ai.ts";
 import type { Todo } from "./types.ts";
 
 describe("parse answers", () => {
@@ -29,8 +29,14 @@ describe("chat actions", () => {
       { op: "update", id: 4, priority: 3 },
     ]);
     expect(rejected).toBe(2);
-    expect(stripActions(text)).toBe("好的，我加了两项。");
+    expect(stripBlocks(text)).toBe("好的，我加了两项。");
     expect(extractActions("no block").actions).toEqual([]);
+  });
+  test("a drafts block is read like a parse answer; an answer without one says so", () => {
+    const text = '这些是我看到的任务：\n\n```todo-drafts\n[{"title":"发周报给老板","due":"2026-09-23T15:00","priority":2,"tags":["#工作"]},{"title":""}]\n```';
+    expect(extractDrafts(text)).toEqual({ drafts: [{ title: "发周报给老板", notes: "", due: "2026-09-23T15:00", priority: 2, tags: ["工作"], project: null }], rejected: 1, found: true });
+    expect(stripBlocks(text)).toBe("这些是我看到的任务：");
+    expect(extractDrafts("今天先做 #3。").found).toBe(false);
   });
   test("the context lists open tasks with ids and the recent done", () => {
     const t = (id: number, status: Todo["status"], due: string | null = null): Todo => ({ id, title: `t${id}`, notes: "", status, priority: 0, due, tags: [], project: null, source: "manual", position: id, createdAt: "", updatedAt: "", doneAt: null });
@@ -40,5 +46,6 @@ describe("chat actions", () => {
     expect(ctx.text).toContain("- #2 · t2 · (doing)");
     expect(ctx.text).toContain("Recently done (1)");
     expect(ctx.system).toContain("todo-actions");
+    expect(ctx.system).toContain("todo-drafts");
   });
 });

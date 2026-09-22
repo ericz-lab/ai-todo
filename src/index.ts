@@ -4,14 +4,15 @@
  *
  * Routes: the page (/), todos (/api/todos…), the AI entry (/api/ai/parse: free text to drafts;
  * /api/todos/:id/execute: one todo done by the model, streamed and stored as a run;
- * /api/ai/context + /api/ai/apply: the chat's context and the operations it asks for),
+ * /api/ai/context, /api/ai/drafts + /api/ai/apply: the chat's context, the drafts and the
+ * operations an answer carries),
  * the panel widget (/api/widget), and a proxy of /space/chat/* to ai-space's chat service
  * with the app token, which is where the conversations live and where the chat widget comes from.
  */
 import type { Database } from "bun:sqlite";
 import index from "../web/index.html";
 import {
-  chatContext, draftsFromAnswer, EXECUTE_SYSTEM, executePrompt, extractActions, modelClient, PARSE_SYSTEM, parsePrompt,
+  chatContext, draftsFromAnswer, EXECUTE_SYSTEM, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
   type ModelClient,
 } from "./ai.ts";
 import { config, databasePath } from "./config.ts";
@@ -279,6 +280,14 @@ export function createServer(opts: ServerOptions) {
           const u = new URL(req.url);
           const ctx = chatContext(listTodos(db, { status: "all", limit: 300 }), { now: now(), timezone: tz(u.searchParams.get("timezone")), lang });
           return json({ ok: true, ...ctx, tools, model: opts.model || undefined, timeoutMs: 300_000 });
+        },
+      },
+      // The drafts in a chat answer, cleaned, for the page to preview; adding them is POST /api/todos/bulk.
+      "/api/ai/drafts": {
+        POST: async (req) => {
+          const b = await body(req);
+          if (typeof b.text !== "string") return fail("text is required");
+          return json({ ok: true, ...extractDrafts(b.text) });
         },
       },
       "/api/ai/apply": {

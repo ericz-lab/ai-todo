@@ -14,10 +14,10 @@ Read this before touching code. Users read [README.md](README.md). This reposito
 ## Stack and runtime model
 
 - Bun + TypeScript, no framework, no runtime dependency. `src/index.ts` is the service (`Bun.serve` with the HTML import of `web/index.html`), `bun:sqlite` for storage.
-- Three AI paths, all through ai-space's model service (`POST ${SPACE_API_URL}/api/model/run`, `docs/model.md`) or chat service (`docs/chat.md`):
-  - **parse** (`POST /api/ai/parse`): one non-streamed call, tag `parse`, `thinking: 0`, system prompt `PARSE_SYSTEM`; the answer is a JSON array read by `draftsFromAnswer` (bad elements dropped). The page previews drafts and adds them with `POST /api/todos/bulk`.
+- Two AI paths, both through ai-space's model service (`POST ${SPACE_API_URL}/api/model/run`, `docs/model.md`) or chat service (`docs/chat.md`):
+  - **the AI panel** (`web/app.ts`, `mountChat`): ai-space's chat widget, scope `todo`, with `context()` from `GET /api/ai/context` (system prompt `CHAT_SYSTEM`, the whole list with ids as `text`). The prompt makes every answer one of three: a `todo-drafts` block (the message was things to do; the page fetches the cleaned drafts from `POST /api/ai/drafts`, renders editable cards inside the widget's shadow root with their own `<style>`, and adds them with `POST /api/todos/bulk`), a `todo-actions` block (a change; the widget's `onReply` posts the answer to `POST /api/ai/apply`, which validates with `cleanAction` and applies each operation, and the page lists the results under the answer), or plain text (a plan or an answer).
   - **execute** (`POST /api/todos/:id/execute`): one streamed call, tag `execute`, tools `WebSearch, WebFetch` (`TODO_WEB=0` removes them), system prompt `EXECUTE_SYSTEM`. The run row is created first, the model call is detached from the request (a closed page does not stop it), and `Live` fans the stream out to whoever is watching; `GET /api/runs/:id/stream` reattaches for a minute after the end. One run in flight per todo; runs left `running` by a crash are closed on boot.
-  - **chat**: the page mounts `SpaceChat` (scope `todo`) with `context()` from `GET /api/ai/context` (system prompt `CHAT_SYSTEM`, the whole list with ids as `text`). An answer may carry a fenced `todo-actions` JSON block; the widget's `onReply` posts the answer to `POST /api/ai/apply`, which validates (`cleanAction`) and applies each operation, and the page lists the results under the answer.
+  - `POST /api/ai/parse` (tag `parse`, `PARSE_SYSTEM`, `thinking: 0`) is the same drafting as one non-streamed call, for the CLI and the skill; the page no longer uses it.
 - Dates are local wall-clock strings (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`) with no zone; the page sends its zone with every AI request and the prompts carry a `Clock:` line so relative dates resolve.
 
 ## Directory map
@@ -32,6 +32,7 @@ src/config.ts          environment
 src/cli.ts             the CLI the planner agent uses
 web/index.html         the page shell; app.ts the logic; styles.css the glass; md.ts Markdown
 agents/planner.md      system prompt of the `planner` agent; planner.svg its avatar
+skills/todo/SKILL.md   the skill ai-space links into the workspace: the list from any agent session
 deploy/app.service     user-level systemd unit template (@DIR@ substituted)
 deploy/post-receive    bare-repository hook: checkout, install, unit, restart, sync
 deploy.sh              rsync alternative to the hook
@@ -68,3 +69,5 @@ Fill in once live: host, workspace path, unit name, port, deploy command, public
 - The widget script must be loaded with a script element created at runtime; a static `<script src="/space/chat/widget.js">` is resolved at build time by Bun's HTML import and fails.
 - A todo row is a CSS grid; the ops column has an explicit `grid-column`, otherwise its fixed `grid-row` makes the auto-placer put it first.
 - `renderAssistant` runs before `onReply` finishes: the applied-actions list is created empty in the render and filled from the apply result by message id.
+- Nodes returned from `renderAssistant` land inside the widget's shadow root: the page stylesheet does not apply there, only inherited custom properties do, so the draft cards carry their own `<style>` (`INNER_CSS`).
+- Drafts already added are remembered per browser (`localStorage` `todo-added`, message ids) so a reloaded thread does not offer them again; another browser will.

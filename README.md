@@ -4,10 +4,17 @@ A todo list with an AI entry. Write what you have to do in one breath and the AI
 
 ## Use
 
-- **AI 解析**: type anything into the box at the top (`⌘/Ctrl + Enter`), check the drafts, fix a date if you must, and add them. **直接添加** adds each line as it is.
-- **执行**: on a task, `✦ 执行` (or the button in its detail) sends it to the model with `WebSearch` and `WebFetch`; the answer streams in, is kept as a run under the task, and survives closing the page.
-- **AI 对话**: the rail on the right is ai-space's chat widget with the list in context. "把明天的都推到周五" or "把年终总结拆成三步" changes the list; the page shows what changed.
-- Views: 今天 (doing, overdue, due today), 即将, 全部, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave, runs and history are under it.
+One AI box at the top, three uses:
+
+- **Add**: write what you have to do in one breath ("明天下午三点前发周报，周五订机票 #出差"). The AI answers with drafts, dates resolved; check them, fix one if you must, `加入清单`.
+- **Change**: "把明天的都推到周五", "3 完成了", "把年终总结拆成三步". The AI edits the list and the answer shows what changed.
+- **Ask**: "今天先做什么", "这周压着什么". Presets above the box: 今日计划, 整理优先级, 拆分任务, 一周回顾.
+
+On a task, `✦ 执行` (or the button in its detail) hands it to the model with `WebSearch` and `WebFetch`; the answer streams in, is kept as a run under the task, and survives closing the page.
+
+Views: 今天 (doing, overdue, due today), 即将, 全部, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave, runs and history are under it. `︿` folds the AI box.
+
+The `todo` skill ships with the app: ai-space links it into the workspace, so any agent session there ("记一下明天要交报告", "今天要做什么") reaches the same list through the CLI.
 
 ## Run locally
 
