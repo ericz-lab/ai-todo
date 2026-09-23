@@ -46,3 +46,5 @@ bun src/cli.ts execute 3 --extra "只要一页"
 A bare repository with `deploy/post-receive` on the host (`git push seoul main`), or `DEPLOY_HOST=<ssh host> ./deploy.sh`. See [AGENTS.md](AGENTS.md) for the host details once it is live.
 
 This is an [ai-space](https://github.com/ericz-lab/ai-space) app; the contract is its `docs/app-spec.md`.
+
+All AI features inherit the default model selected in ai-space Settings. Legacy `TODO_MODEL` values are ignored.

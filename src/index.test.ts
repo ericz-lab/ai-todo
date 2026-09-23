@@ -14,6 +14,7 @@ const space = Bun.serve({
     calls.push({ path: url.pathname, auth: req.headers.get("authorization"), body });
     if (req.headers.get("cookie")) return new Response("cookie leaked", { status: 500 });
     if (url.pathname === "/api/model/run") {
+      expect(body).not.toHaveProperty("model");
       if (failNext) { failNext = false; return new Response(JSON.stringify({ ok: false, error: "quota", call: { id: 9 } }), { status: 502, headers: { "content-type": "application/json" } }); }
       if (body.tag === "parse") return Response.json({ ok: true, text: '```json\n[{"title":"发周报给老板","due":"2026-09-23T15:00","priority":2,"tags":["工作"],"project":null,"notes":""},{"title":"订去上海的机票","due":"2026-09-26","tags":["出差"]}]\n```', call: { id: 1, model: "sonnet" } });
       if (body.stream) {
@@ -126,6 +127,7 @@ describe("service", () => {
   });
   test("chat context and applied actions", async () => {
     const ctx = await j("/api/ai/context?timezone=Asia/Shanghai");
+    expect(ctx.body).not.toHaveProperty("model");
     expect(ctx.body.tools).toEqual(["WebSearch", "WebFetch"]);
     expect(String(ctx.body.text)).toContain(`- #${todo.id} · 买牛奶 · due 2026-09-23 · p1 · #购物 · (doing)`);
     const text = `改好了。\n\n\`\`\`todo-actions\n[{"op":"done","id":${todo.id}},{"op":"add","title":"写月报","due":"2026-09-30","priority":2},{"op":"delete","id":999},{"op":"update","id":${todo.id},"due":"bad"}]\n\`\`\``;

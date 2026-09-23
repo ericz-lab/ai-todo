@@ -29,7 +29,6 @@ export interface ServerOptions {
   /** ai-space's API and this app's token; every AI route answers 502 without them. */
   spaceApiUrl?: string;
   spaceAppToken?: string;
-  model?: string;
   web?: boolean;
   timezone?: string;
   lang?: string;
@@ -94,7 +93,7 @@ export function createServer(opts: ServerOptions) {
     if (!text) return fail("text is required");
     if (text.length > 20_000) return fail("text is too long (20000 characters)", 413);
     const prompt = parsePrompt(text, { now: now(), timezone: tz(b.timezone), tags: tagCounts(db).map((x) => x.tag), projects: projectCounts(db).map((x) => x.project), lang });
-    const r = await model.run({ prompt, system: PARSE_SYSTEM, tag: "parse", thinking: 0, timeoutMs: 120_000, model: opts.model });
+    const r = await model.run({ prompt, system: PARSE_SYSTEM, tag: "parse", thinking: 0, timeoutMs: 120_000 });
     if (!r.ok) return json({ ok: false, error: r.error, call: r.call }, 502);
     let drafts: Draft[];
     try { drafts = draftsFromAnswer(r.text); } catch (e) { return json({ ok: false, error: (e as Error).message, raw: r.text.slice(0, 2000), call: r.call }, 502); }
@@ -105,7 +104,7 @@ export function createServer(opts: ServerOptions) {
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
   const startExecution = (todo: Todo, extra: string, timezone: string): Live => {
     const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id) });
-    const run = createRun(db, todo.id, prompt, opts.model || null);
+    const run = createRun(db, todo.id, prompt, null);
     const l = new Live(run);
     live.set(run.id, l);
     void (async () => {
@@ -113,7 +112,7 @@ export function createServer(opts: ServerOptions) {
       try {
         let text = "";
         let ended = false;
-        for await (const ev of model!.stream({ prompt, system: EXECUTE_SYSTEM, tag: "execute", tools, timeoutMs: executeTimeoutMs, model: opts.model })) {
+        for await (const ev of model!.stream({ prompt, system: EXECUTE_SYSTEM, tag: "execute", tools, timeoutMs: executeTimeoutMs })) {
           if (ev.event === "delta") { text += ev.text; l.text = text; l.emit("delta", { text: ev.text }); }
           else if (ev.event === "done") { ended = true; finished = finishRun(db, run.id, { ok: true, output: ev.text || text, callId: ev.call?.id ?? null, model: ev.call?.model ?? null, costUsd: ev.call?.costUsd ?? null }); }
           else { ended = true; finished = finishRun(db, run.id, { ok: false, output: text, error: ev.error, callId: ev.call?.id ?? null, costUsd: ev.call?.costUsd ?? null }); }
@@ -282,7 +281,7 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => {
           const u = new URL(req.url);
           const ctx = chatContext(listTodos(db, { status: "all", limit: 300 }), { now: now(), timezone: tz(u.searchParams.get("timezone")), lang });
-          return json({ ok: true, ...ctx, tools, model: opts.model || undefined, timeoutMs: 300_000 });
+          return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 });
         },
       },
       // The drafts in a chat answer, cleaned, for the page to preview; adding them is POST /api/todos/bulk.
@@ -323,7 +322,7 @@ if (import.meta.main) {
   if (abandoned) log(`closed ${abandoned} run(s) left running by the last stop`);
   const { server } = createServer({
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
-    model: config.model, timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, webTools: config.web,
+    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, webTools: config.web,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

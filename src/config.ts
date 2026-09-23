@@ -10,8 +10,6 @@ export const config = {
   /** ai-space's API and this app's token (handed over in space.env); every AI feature goes through them. */
   spaceApiUrl: env("SPACE_API_URL").replace(/\/$/, ""),
   spaceAppToken: env("SPACE_APP_TOKEN"),
-  /** Model for every call; empty = the space's default. */
-  model: env("TODO_MODEL"),
   /** Let an execution search the web (0 = off): WebSearch and WebFetch. */
   web: env("TODO_WEB", "1") !== "0",
   /** Wall-clock cap of one execution, seconds. */
