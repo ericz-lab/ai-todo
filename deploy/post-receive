@@ -2,6 +2,7 @@
 # Bare-repository hook on the host: checkout -> bun install -> reinstall the unit -> restart ->
 # ask ai-space to re-read space.yaml. Install as ~/ai-todo.git/hooks/post-receive (chmod +x).
 set -e; unset GIT_DIR
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 APP=ai-todo
 WORK=$HOME/.ai-space/apps/$APP
 mkdir -p "$WORK"
