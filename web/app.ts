@@ -273,8 +273,11 @@ async function flushSave() {
   try { const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify(body) }); if (cur && cur.id === r.todo.id) cur = r.todo; }
   catch (e) { toast(`保存失败：${(e as Error).message}`); }
 }
-d.title.oninput = () => scheduleSave({ title: d.title.value });
-d.notes.oninput = () => { sizeNotes(); scheduleSave({ notes: d.notes.value }); };
+// While an IME composes (pinyin), the field holds the raw syllables: save when the word is committed.
+d.title.oninput = (e) => { if (!(e as InputEvent).isComposing) scheduleSave({ title: d.title.value }); };
+d.title.addEventListener("compositionend", () => scheduleSave({ title: d.title.value }));
+d.notes.oninput = (e) => { sizeNotes(); if (!(e as InputEvent).isComposing) scheduleSave({ notes: d.notes.value }); };
+d.notes.addEventListener("compositionend", () => scheduleSave({ notes: d.notes.value }));
 d.due.onchange = () => { d.due.dataset.dayOnly = ""; scheduleSave({ due: d.due.value ? d.due.value.slice(0, 16) : null }); };
 d.priority.onchange = () => scheduleSave({ priority: Number(d.priority.value) });
 d.project.onchange = () => scheduleSave({ project: d.project.value.trim() || null });

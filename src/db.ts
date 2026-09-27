@@ -224,6 +224,32 @@ export function createTodo(db: Database, draft: Draft, source: Source = "manual"
   return todo;
 }
 
+/** Fields the page autosaves as they are typed. */
+const TYPED = ["title", "notes"];
+/** How long after the last keystroke-save a new save still belongs to the same edit. */
+export const EDIT_WINDOW_MS = 60_000;
+/**
+ * A typing session is one change: the page saves the title and the notes every half second while
+ * they are typed, so without this each pause (and each IME syllable) became its own history line.
+ * A save of the same typed field(s), from the same source, within EDIT_WINDOW_MS of the todo's
+ * latest event (itself such an edit) extends that event: `from` stays what it was before the
+ * session, `to` and `at` move to now. Returns false when the save is a change of its own.
+ */
+function mergeEdit(db: Database, id: number, source: Source, changed: Record<string, unknown>, t: string): boolean {
+  const keys = Object.keys(changed);
+  if (!keys.every((k) => TYPED.includes(k))) return false;
+  const last = db.query("SELECT * FROM todo_events WHERE todo_id = ? ORDER BY id DESC LIMIT 1").get(id) as Row | null;
+  if (!last || last.kind !== "edited") return false;
+  const e = toEvent(last);
+  const prev = e.data.changed as Record<string, { from: unknown; to: unknown }> | undefined;
+  if (e.data.source !== source || !prev || Object.keys(prev).sort().join() !== keys.sort().join()) return false;
+  if (Date.parse(t) - Date.parse(e.at) > EDIT_WINDOW_MS) return false;
+  const merged: Record<string, unknown> = {};
+  for (const k of keys) merged[k] = { from: prev[k]!.from, to: (changed[k] as { to: unknown }).to };
+  db.query("UPDATE todo_events SET data = ?, at = ? WHERE id = ?").run(JSON.stringify({ ...e.data, changed: merged }), t, e.id);
+  return true;
+}
+
 export function updateTodo(db: Database, id: number, patch: Patch, source: Source = "manual"): Todo | null {
   const before = getTodo(db, id);
   if (!before) return null;
@@ -242,7 +268,7 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
     db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, parent_id = ?, updated_at = ?, done_at = ? WHERE id = ?`)
       .run(next.title, next.notes, next.status, next.priority, next.due, JSON.stringify(next.tags), next.project, next.parentId, t, doneAt, id);
     const kind = "status" in changed ? String(next.status) : "edited";
-    addEvent(db, id, kind, { source, changed }, t);
+    if (kind !== "edited" || !mergeEdit(db, id, source, changed, t)) addEvent(db, id, kind, { source, changed }, t);
     // Finishing a todo finishes its steps still open; each gets its own history line.
     if (changed.status && next.status === "done") {
       for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing") updateTodo(db, sub.id, { status: "done" }, source);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { cleanDraft, cleanDue, cleanTags, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos, openDb, projectCounts, runningRun, tagCounts, updateTodo, abandonRuns } from "./db.ts";
+import { EDIT_WINDOW_MS, cleanDraft, cleanDue, cleanTags, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos, openDb, projectCounts, runningRun, tagCounts, updateTodo, abandonRuns } from "./db.ts";
 
 describe("cleaning", () => {
   test("due accepts a day or a minute, nothing else", () => {
@@ -115,5 +115,32 @@ describe("subtasks", () => {
     const t = listTodos(db)[0]!;
     expect(t).toMatchObject({ title: "旧的", parentId: null, subtasks: { total: 0, done: 0 } });
     expect(createTodo(db, { title: "新的", parentId: t.id }).parentId).toBe(t.id);
+  });
+});
+
+describe("history of typed edits", () => {
+  test("a typing session of notes is one edit line, from before it to the last save", () => {
+    const db = openDb(":memory:");
+    const t = createTodo(db, { title: "考虑是否购买 X 会员" }, "ai");
+    for (const notes of ["x", "x会员的you dian", "x会员的优点是", "x会员的优点是：\n1. 解除文字输入限制"]) updateTodo(db, t.id, { notes });
+    const events = listEvents(db, t.id);
+    expect(events.map((e) => e.kind)).toEqual(["edited", "created"]);
+    expect(events[0]!.data).toEqual({ source: "manual", changed: { notes: { from: "", to: "x会员的优点是：\n1. 解除文字输入限制" } } });
+    expect(getTodo(db, t.id)!.notes).toBe("x会员的优点是：\n1. 解除文字输入限制");
+  });
+  test("another field, another source, another kind or a pause past the window starts a new line", () => {
+    const db = openDb(":memory:");
+    const t = createTodo(db, { title: "a" });
+    updateTodo(db, t.id, { notes: "one" });
+    updateTodo(db, t.id, { title: "b" });                       // another field
+    updateTodo(db, t.id, { title: "c" }, "chat");               // another source
+    updateTodo(db, t.id, { priority: 2 });                      // not a typed field
+    updateTodo(db, t.id, { notes: "two" });
+    const old = new Date(Date.now() - EDIT_WINDOW_MS - 1000).toISOString();
+    db.query("UPDATE todo_events SET at = ? WHERE todo_id = ?").run(old, t.id);
+    updateTodo(db, t.id, { notes: "three" });                   // after a pause
+    updateTodo(db, t.id, { status: "done" });
+    const kinds = listEvents(db, t.id).map((e) => [e.kind, Object.keys((e.data.changed ?? {}) as object).join()]);
+    expect(kinds).toEqual([["done", "status"], ["edited", "notes"], ["edited", "notes"], ["edited", "priority"], ["edited", "title"], ["edited", "title"], ["edited", "notes"], ["created", ""]]);
   });
 });
