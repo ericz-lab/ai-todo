@@ -8,10 +8,16 @@ mkdir -p "$WORK"
 git --git-dir=$HOME/$APP.git --work-tree=$WORK checkout -f main
 cd "$WORK"
 ~/.bun/bin/bun install --production --frozen-lockfile 2>&1 | tail -1
-mkdir -p ~/.config/systemd/user
-sed "s|@DIR@|$WORK|g" deploy/app.service > ~/.config/systemd/user/$APP.service
-systemctl --user daemon-reload
-systemctl --user restart $APP
-echo "  -> $APP restarted"
+if systemctl --user cat "space-$APP.service" >/dev/null 2>&1; then
+  # ai-space runs this app (SPACE_SUPERVISOR=space, docs/supervision.md): restart its unit, never ours.
+  "$HOME/.local/bin/space" app restart "$APP"
+  echo "  -> $APP restarted (space-$APP.service)"
+else
+  mkdir -p ~/.config/systemd/user
+  sed "s|@DIR@|$WORK|g" deploy/app.service > ~/.config/systemd/user/$APP.service
+  systemctl --user daemon-reload
+  systemctl --user restart $APP
+  echo "  -> $APP restarted"
+fi
 TOKEN=$(grep "^SPACE_API_TOKEN=" "$HOME/.ai-space/.env" | cut -d= -f2-)
 curl -sS -m 20 -X POST "http://127.0.0.1:8700/api/apps/$APP/sync" -H "authorization: Bearer $TOKEN" -o /dev/null -w "  -> ai-space sync HTTP %{http_code}\n" || echo "  -> ai-space sync skipped"

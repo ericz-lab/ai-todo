@@ -22,6 +22,9 @@ service:
   command: bun src/index.ts
   port: 8970
   health: /healthz
+  # What the operator unit (deploy/app.service) sets with Environment=, so space-<app>.service runs the same.
+  env:
+    NODE_ENV: "production"
 
 # Chat identity on the panel: reads and changes the list through the CLI.
 agents:
