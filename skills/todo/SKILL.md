@@ -32,6 +32,7 @@ alias todo='bun '"$TODO_DIR"'/src/cli.ts'
 | "XX 完成了 / 做完了 3" | `todo done <id>`; find the id with `todo list --q <text>` when they name the task. |
 | "开始做 / 推迟到周五 / 改成高优先级" | `todo start <id>` or `curl -sS -X PATCH http://127.0.0.1:8970/api/todos/<id> -H 'content-type: application/json' -d '{"due":"YYYY-MM-DD"}'` (fields: title, notes, status, priority, due, tags, project; source `cli`). |
 | "让 AI 去做 / 帮我查一下这条" | `todo execute <id> [--extra "…"]`; it streams the model's result and stores it under the task. Minutes and a model call; say so before running unless they asked for it. |
+| "记录进展 / 回写验收结果 / 追加操作记录" | `todo record <id> "<content>"`; preserve notes and earlier entries. Include evidence, what was verified and what remains unverified. Use `todo records <id> [--before id]` to read older entries. |
 | "删掉 …" | `todo rm <id>`, after confirming which one; it takes the subtasks with it, say so. |
 | "拆成几步 / 放到 X 下面 / 这几个是 X 的子任务" | Subtasks, one level deep: `todo add "<step>" --parent <id>` for a new one, `todo move <id> <parent-id>` for an existing one (`none` takes it out). A task with subtasks cannot become one, a subtask cannot have its own. `todo done <parent>` also finishes its open subtasks. |
 
@@ -43,7 +44,9 @@ Dates are the person's local wall clock, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; res
 GET    /api/todos?status=active|done|all&q=&tag=&project=    { todos, tags, projects }
 POST   /api/todos            { title, notes?, due?, priority?, tags?, project?, parentId?, source: "cli" }
 POST   /api/todos/bulk       { drafts: [...], parentId?, source: "cli" }   parentId: every draft becomes its subtask
-GET    /api/todos/:id        { todo, parent, subtasks, events, runs }
+GET    /api/todos/:id        { todo, parent, subtasks, events, runs, records, recordsNextBefore }
+GET    /api/todos/:id/records?before=<id>  { records, recordsNextBefore } (50 newest first)
+POST   /api/todos/:id/records { content, source: "cli" } -> { record }
 PATCH  /api/todos/:id        any of the fields above; parentId null takes a subtask out
 DELETE /api/todos/:id
 POST   /api/ai/parse         { text } -> { drafts }
@@ -51,3 +54,5 @@ POST   /api/todos/:id/execute  { extra? } -> text/event-stream
 ```
 
 Answers are `{ ok: true, ... }` or `{ ok: false, error }`.
+
+Operation records are append-only, support Markdown, and allow 1–20,000 characters. Correct earlier claims with a new entry. After an uncertain POST response, inspect recent records before retrying to avoid duplicates.

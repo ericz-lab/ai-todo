@@ -42,6 +42,9 @@ export type Patch = Partial<Pick<Todo, "title" | "notes" | "status" | "priority"
 /** One line of a todo's history; appended, never rewritten. */
 export type TodoEvent = { id: number; todoId: number; kind: string; data: Record<string, unknown>; at: string };
 
+/** A progress or acceptance note, appended separately from editable task notes. */
+export type OperationRecord = { id: number; todoId: number; content: string; source: Source; createdAt: string };
+
 /** One AI execution of a todo. */
 export type Run = {
   id: number;
@@ -61,7 +64,8 @@ export type Run = {
 export type Action =
   | ({ op: "add" } & Draft)
   | { op: "done" | "reopen" | "delete" | "start"; id: number }
-  | ({ op: "update"; id: number } & Patch);
+  | ({ op: "update"; id: number } & Patch)
+  | { op: "record"; id: number; content: string };
 
 export const STATUSES: Status[] = ["open", "doing", "done", "dropped"];
 export const PRIORITIES: Priority[] = [0, 1, 2, 3];

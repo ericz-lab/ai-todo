@@ -1,6 +1,7 @@
 /**
  * Command line over the running service, for the `planner` agent and for the shell:
  *   bun src/cli.ts list [--all|--done] [--q text] [--tag t] [--project p]
+ *   bun src/cli.ts record <id> <content> | records <id> [--before id]
  *   bun src/cli.ts show <id>
  *   bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text] [--parent id]
  *   bun src/cli.ts done <id> | start <id> | reopen <id> | rm <id>      (done and rm take the subtasks along)
@@ -45,13 +46,29 @@ try {
     }
     case "show": {
       const id = Number(args[0]); if (!id) die("usage: show <id>");
-      const r = (await call(`/api/todos/${id}`)) as { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: { kind: string; at: string; data: Record<string, unknown> }[]; runs: { id: number; status: string; startedAt: string; output: string; error: string | null }[] };
+      const r = (await call(`/api/todos/${id}`)) as { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: { kind: string; at: string; data: Record<string, unknown> }[]; records: { id: number; content: string; source: string; createdAt: string }[]; recordsNextBefore: number | null; runs: { id: number; status: string; startedAt: string; output: string; error: string | null }[] };
       console.log(line(r.todo));
       if (r.parent) console.log(`subtask of ${line(r.parent)}`);
       if (r.subtasks.length) { console.log("\nsubtasks:"); for (const s of r.subtasks) console.log(line(s, "  ↳ ")); }
       if (r.todo.notes) console.log(`\n${r.todo.notes}`);
       console.log(`\ncreated ${r.todo.createdAt} (${r.todo.source})${r.todo.doneAt ? `, done ${r.todo.doneAt}` : ""}`);
+      for (const entry of r.records) console.log(`\n--- record ${entry.id} ${entry.createdAt} (${entry.source})\n${entry.content}`);
+      if (r.recordsNextBefore) console.log(`\nEarlier records: records ${id} --before ${r.recordsNextBefore}`);
       for (const run of r.runs) console.log(`\n--- run ${run.id} ${run.status} ${run.startedAt}${run.error ? ` (${run.error})` : ""}\n${run.output}`);
+      break;
+    }
+    case "record": {
+      const id = Number(args[0]); const content = args.slice(1).join(" ");
+      if (!Number.isInteger(id) || id <= 0 || !content.trim()) die("usage: record <id> <content>");
+      console.log(JSON.stringify(await call(`/api/todos/${id}/records`, { method: "POST", body: JSON.stringify({ content, source: "cli" }) }), null, 2));
+      break;
+    }
+    case "records": {
+      const id = Number(args[0]);
+      if (!Number.isInteger(id) || id <= 0) die("usage: records <id> [--before id]");
+      const q = new URLSearchParams();
+      if (flags.before) q.set("before", flags.before);
+      console.log(JSON.stringify(await call(`/api/todos/${id}/records?${q}`), null, 2));
       break;
     }
     case "add": {
@@ -110,7 +127,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done] [--q text] [--tag t] [--project p] | show <id> | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
+      console.log("usage: list [--all|--done] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
   }
 } catch (e) {
   die((e as Error).message);
