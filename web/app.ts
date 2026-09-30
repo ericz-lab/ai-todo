@@ -11,6 +11,8 @@ type Todo = { id: number; title: string; notes: string; status: Status; priority
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
+type OperationRecord = { id: number; todoId: number; content: string; source: string; createdAt: string };
+type RecordPage = { records: OperationRecord[]; recordsNextBefore: number | null };
 type ChatMessage = { id: number; role: "user" | "assistant"; content: string; error?: string; live?: boolean };
 type ChatContext = { system?: string; text?: string; ack?: string; tools?: string[]; model?: string; thinking?: number };
 type ChatWidget = { fill(text: string): void; send(text: string): Promise<void>; destroy(): void };
@@ -211,11 +213,12 @@ let liveAbort: AbortController | null = null;
 const d = {
   done: $<HTMLInputElement>("#d-done"), title: $<HTMLInputElement>("#d-title"), due: $<HTMLInputElement>("#d-due"), priority: $<HTMLSelectElement>("#d-priority"),
   project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), notesView: $("#d-notes-view"), extra: $<HTMLInputElement>("#d-extra"),
+  records: $("#d-records"), recordContent: $<HTMLTextAreaElement>("#d-record-content"), recordAdd: $<HTMLButtonElement>("#d-record-add"), recordMore: $<HTMLButtonElement>("#d-record-more"),
   runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"),
   subsN: $("#d-subs-n"), subsList: $("#d-subs-list"), subAdd: $<HTMLInputElement>("#d-sub-add"), parent: $("#d-parent"),
 };
 let curSubs: Todo[] = [];
-type Detail = { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
+type Detail = RecordPage & { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
 async function openDetail(id: number, execute = false) {
   // Moving from one todo to another (a subtask, its parent) keeps what was typed in the first.
   if (cur) { clearTimeout(saveTimer); await flushSave(); liveAbort?.abort(); liveAbort = null; }
@@ -226,6 +229,8 @@ async function openDetail(id: number, execute = false) {
   renderSubs(r.parent, r.subtasks);
   renderRuns(r.runs);
   renderEvents(r.events);
+  renderRecords(r);
+  d.recordContent.value = recordDrafts.get(id) ?? "";
   els.detail.hidden = false; els.scrim.hidden = false;
   history.replaceState(null, "", `?todo=${id}`);
   const running = r.runs.find((x) => x.status === "running");
@@ -342,6 +347,44 @@ d.subAdd.onkeydown = async (e) => {
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
 $("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
 
+// Drafts stay with their todo when the detail is closed or another task is opened.
+const recordDrafts = new Map<number, string>();
+let recordCursor: number | null = null;
+function renderRecords(page: RecordPage, append = false) {
+  const html = page.records.map((r) => `<article class="operation-record">
+    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span></div>
+    <div class="md">${renderMd(r.content)}</div></article>`).join("");
+  if (append) d.records.insertAdjacentHTML("beforeend", html);
+  else d.records.innerHTML = html || `<p class="record-hint">还没有操作记录</p>`;
+  recordCursor = page.recordsNextBefore;
+  d.recordMore.hidden = recordCursor === null;
+}
+d.recordContent.oninput = () => { if (cur) recordDrafts.set(cur.id, d.recordContent.value); };
+d.recordAdd.onclick = async () => {
+  if (!cur || d.recordAdd.disabled || !d.recordContent.value.trim()) return;
+  const id = cur.id, content = d.recordContent.value;
+  d.recordAdd.disabled = true;
+  try {
+    await api(`/api/todos/${id}/records`, { method: "POST", body: JSON.stringify({ content, source: "manual" }) });
+    if (recordDrafts.get(id) === content) recordDrafts.delete(id);
+    if (cur?.id === id && d.recordContent.value === content) d.recordContent.value = "";
+    toast("已追加记录");
+    const detail = await api<Detail>(`/api/todos/${id}`);
+    if (cur?.id === id) { renderRecords(detail); renderEvents(detail.events); }
+  } catch (e) { toast((e as Error).message); }
+  finally { d.recordAdd.disabled = false; }
+};
+d.recordMore.onclick = async () => {
+  if (!cur || recordCursor === null || d.recordMore.disabled) return;
+  const id = cur.id, before = recordCursor;
+  d.recordMore.disabled = true;
+  try {
+    const page = await api<RecordPage>(`/api/todos/${id}/records?before=${before}`);
+    if (cur?.id === id && recordCursor === before) renderRecords(page, true);
+  } catch (e) { toast((e as Error).message); }
+  finally { d.recordMore.disabled = false; }
+};
+
 function renderRuns(runs: Run[]) {
   d.runs.innerHTML = runs.map(runHtml).join("");
   d.runs.querySelectorAll<HTMLElement>("[data-op=done]").forEach((b) => { b.onclick = () => { d.done.checked = true; d.done.onchange!(new Event("change")); }; });
@@ -354,7 +397,7 @@ function runHtml(r: Run): string {
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = { "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";
@@ -549,7 +592,7 @@ async function mountChat() {
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
         const ul = appliedNotes.get(m.id);
-        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", reopen: "重开", delete: "删除" };
+        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", reopen: "重开", record: "追加记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
         toast(`AI 改了清单：${ok}/${r.results.length} 项成功`);

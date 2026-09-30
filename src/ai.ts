@@ -3,8 +3,8 @@
  * into drafts, execute one todo, the chat's context) and the readers of what the model sends
  * back (a JSON array of drafts, a fenced `todo-actions` block in a chat answer).
  */
-import { cleanDraft, cleanPatch } from "./db.ts";
-import type { Action, Draft, Todo } from "./types.ts";
+import { cleanDraft, cleanPatch, cleanRecord } from "./db.ts";
+import type { Action, Draft, Todo, OperationRecord } from "./types.ts";
 
 // ---- the model service (docs/model.md)
 
@@ -142,7 +142,7 @@ Rules:
 - Actions only the person can take (pay, send, call, book, sign) are listed under a final heading as a short checklist; say clearly what is done and what is not.
 - Answer in the person's language, in Markdown, concise: lead with the result, then the evidence, then the checklist. No preamble.`;
 
-export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; parent?: Todo | null; subtasks?: Todo[] }): string {
+export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; parent?: Todo | null; subtasks?: Todo[]; records?: OperationRecord[] }): string {
   const lines = [
     `Clock: ${clockLine(opts.now, opts.timezone)}`,
     `Answer language: ${opts.lang}`,
@@ -156,6 +156,7 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
   if (todo.notes) lines.push("", "Notes from the person:", todo.notes);
   if (opts.parent) lines.push("", `This is one step of the larger task: ${opts.parent.title}${opts.parent.notes ? `\nIts notes: ${opts.parent.notes.slice(0, 1000)}` : ""}`);
   if (opts.subtasks?.length) lines.push("", "Its steps (subtasks):", ...opts.subtasks.map((s) => `- [${s.status === "done" ? "x" : " "}] ${s.title}`));
+  if (opts.records?.length) lines.push("", "Recent operation records (newest first; older entries may be omitted):", ...opts.records.map((r) => `[${r.createdAt}, ${r.source}] ${r.content.slice(0, 4000)}`));
   if (opts.extra?.trim()) lines.push("", "Instructions for this run:", opts.extra.trim());
   return lines.join("\n");
 }
@@ -178,6 +179,8 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
    {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…","parentId":N}  (same fields as a draft; parentId makes it a subtask)
    {"op":"update","id":N, …any of title, notes, due, priority, tags, project, parentId…}  (parentId null takes a subtask out of its parent)
    {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
+   {"op":"record","id":N,"content":"…"}  (append progress, actions taken or acceptance results; never replace notes for these)
+   - Operation records are append-only. Correct an earlier entry by appending a new one. Distinguish verified facts from unverified claims.
    - Only ids from the list. Never delete without being asked; prefer done or update.
    - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its open subtasks; deleting it deletes them.
    - Splitting a task ("拆成三步", "拆分"): add each part as a subtask with "parentId" set to the original's id, keeping its project and tags; leave the original open.
@@ -188,7 +191,7 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
 Never put both blocks in one answer. Dates outside a block are written as the person would say them.`;
 
 /** What the model reads before every chat turn: the list, with ids, grouped by state. */
-export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; lang: string }): { system: string; text: string; ack: string } {
+export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; lang: string; records?: Record<number, OperationRecord[]> }): { system: string; text: string; ack: string } {
   const line = (t: Todo) => {
     const bits = [`#${t.id}`, t.title];
     if (t.due) bits.push(`due ${t.due}`);
@@ -196,7 +199,9 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     if (t.project) bits.push(`@${t.project}`);
     if (t.tags.length) bits.push(t.tags.map((x) => `#${x}`).join(" "));
     if (t.status === "doing") bits.push("(doing)");
-    return `- ${bits.join(" · ")}${t.notes ? `\n  notes: ${t.notes.replace(/\s+/g, " ").slice(0, 200)}` : ""}`;
+    const records = opts.records?.[t.id] ?? [];
+    const history = records.length ? "\n  Recent operation records (newest first, excerpts):\n" + records.map((r) => `    [${r.createdAt}, ${r.source}] ${r.content.replace(/\s+/g, " ").slice(0, 500)}`).join("\n") : "";
+    return `- ${bits.join(" · ")}${t.notes ? `\n  notes: ${t.notes.replace(/\s+/g, " ").slice(0, 200)}` : ""}${history}`;
   };
   const active = todos.filter((t) => t.status === "open" || t.status === "doing");
   const done = todos.filter((t) => t.status === "done").slice(0, 15);
@@ -254,6 +259,7 @@ export function cleanAction(v: unknown): Action {
   const op = String(a.op ?? "");
   const id = () => { const n = Number(a.id); if (!Number.isInteger(n) || n <= 0) throw new Error("id required"); return n; };
   switch (op) {
+    case "record": return { op, id: id(), content: cleanRecord(a.content) };
     case "add": return { op, ...cleanDraft(a) };
     case "update": { const { op: _o, id: _i, ...rest } = a; return { op, id: id(), ...cleanPatch(rest) }; }
     case "done": case "start": case "reopen": case "delete": return { op, id: id() };

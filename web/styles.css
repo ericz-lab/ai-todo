@@ -231,3 +231,9 @@ button { cursor: pointer; }
   .modal { padding: 10px; }
   .d-meta label { flex: 1; } .d-meta input, .d-meta select { min-width: 0; width: 100%; }
 }
+
+/* Append-only operation records, separate from editable notes and audit events. */
+.operation-records { border-top: 1px solid var(--hairline); padding-top: 16px; margin-top: 16px; }
+.record-hint { color: var(--muted); font-size: 12.5px; font-weight: 400; }
+.operation-records > .btn { margin: 8px 0; }
+.operation-record { border-top: 1px solid var(--hairline); padding: 12px 0; overflow-wrap: anywhere; }

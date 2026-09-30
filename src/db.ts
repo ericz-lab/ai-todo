@@ -3,7 +3,7 @@
  * so a todo can always answer "where from, when".
  */
 import { Database } from "bun:sqlite";
-import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent } from "./types.ts";
+import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS todos (
@@ -30,6 +30,14 @@ CREATE TABLE IF NOT EXISTS todo_events (
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS todo_events_todo ON todo_events(todo_id, id);
+CREATE TABLE IF NOT EXISTS todo_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS todo_records_todo ON todo_records(todo_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   todo_id INTEGER NOT NULL,
@@ -127,6 +135,13 @@ export function cleanProject(v: unknown): string | null {
 export function cleanNotes(v: unknown): string {
   return String(v ?? "").trim().slice(0, 20_000);
 }
+/** Reject invalid records instead of silently losing text. */
+export function cleanRecord(v: unknown): string {
+  if (typeof v !== "string" || !v.trim()) throw new Error("record content is required");
+  if (v.length > 20_000) throw new Error("record content exceeds 20000 characters");
+  return v.trim();
+}
+
 export function cleanStatus(v: unknown): Status {
   const s = String(v ?? "");
   if (!STATUSES.includes(s as Status)) throw new Error(`status must be one of ${STATUSES.join(", ")}, got ${s}`);
@@ -207,6 +222,32 @@ export function addEvent(db: Database, todoId: number, kind: string, data: Recor
 }
 export function listEvents(db: Database, todoId: number, limit = 100): TodoEvent[] {
   return (db.query("SELECT * FROM todo_events WHERE todo_id = ? ORDER BY id DESC LIMIT ?").all(todoId, limit) as Row[]).map(toEvent);
+}
+
+const toRecord = (r: Row): OperationRecord => ({
+  id: r.id as number, todoId: r.todo_id as number, content: r.content as string,
+  source: r.source as Source, createdAt: r.created_at as string,
+});
+
+/** One transaction per append: simultaneous writers never replace each other's entries. */
+export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual"): OperationRecord | null {
+  const text = cleanRecord(content);
+  if (!SOURCES.includes(source)) throw new Error("invalid record source");
+  return db.transaction(() => {
+    if (!getTodo(db, todoId)) return null;
+    const t = now();
+    const row = db.query("INSERT INTO todo_records (todo_id, content, source, created_at) VALUES (?, ?, ?, ?) RETURNING *")
+      .get(todoId, text, source, t) as Row;
+    db.query("UPDATE todos SET updated_at = ? WHERE id = ?").run(t, todoId);
+    addEvent(db, todoId, "record-added", { source, recordId: row.id }, t);
+    return toRecord(row);
+  })();
+}
+
+/** Newest first, with a stable id cursor so new appends cannot shift older pages. */
+export function listRecords(db: Database, todoId: number, limit = 50, before?: number): OperationRecord[] {
+  return (db.query("SELECT * FROM todo_records WHERE todo_id = ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?")
+    .all(todoId, before ?? null, before ?? null, Math.min(Math.max(limit, 1), 101)) as Row[]).map(toRecord);
 }
 
 export function createTodo(db: Database, draft: Draft, source: Source = "manual", origin: Record<string, unknown> = {}): Todo {

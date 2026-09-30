@@ -12,11 +12,31 @@ One AI box at the top, three uses:
 
 On a task, `✦ 执行` (or the button in its detail) hands it to the model with `WebSearch` and `WebFetch`; the answer streams in, is kept as a run under the task, and survives closing the page.
 
-Views: 今天 (doing, overdue, due today), 即将, 全部, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, runs and history are under it.
+Views: 今天 (doing, overdue, due today), 即将, 全部, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
 
 Subtasks: a task can have steps, one level deep. They sit indented under their task in the list, which shows `☑ done/total`; each is a full todo (due, execute, history). Add them in the detail (they keep the task's project and tags), from the chat ("拆成三步"), or with `--parent`. Finishing a task finishes its open steps; deleting it deletes them. `︿` folds the AI box.
 
 The `todo` skill ships with the app: ai-space links it into the workspace, so any agent session there ("记一下明天要交报告", "今天要做什么") reaches the same list through the CLI.
+
+## Operation records
+
+Use the detail's **操作记录** section for progress, actions taken, verification evidence and remaining work. Each append stores its own timestamp and source (`manual`, `cli`, `chat`, or `ai`); it never replaces the editable notes or earlier records. Correct a record by appending a new entry. Records support Markdown, up to 20,000 characters each; empty and oversized entries are rejected. Completed tasks also accept records.
+
+The newest 50 entries appear first; **查看更早记录** loads older entries. Unsaved record drafts survive closing or switching tasks during the current page session. Audit history separately records each append. Upgrading creates the records table automatically and keeps existing notes and history unchanged; no text is automatically moved out of old notes. Records remain stored for audit when their todo is deleted, like events and AI runs, but deleted todos are not exposed by the records API.
+
+```bash
+bun src/cli.ts record 3 "Read-only verification passed; writes remain unverified"
+bun src/cli.ts records 3                 # newest 50; recordsNextBefore is the next cursor
+bun src/cli.ts records 3 --before 120
+bun src/cli.ts show 3                    # includes recent records
+```
+
+- `POST /api/todos/:id/records` with `{ "content": "...", "source": "cli" }` appends one entry and returns `{ ok, record }`.
+- `GET /api/todos/:id/records?before=<record-id>` returns `{ ok, records, recordsNextBefore }`, newest first, at most 50 entries.
+- `GET /api/todos/:id` includes the first page as `records` and `recordsNextBefore`.
+- Chat can append with `{ "op": "record", "id": 3, "content": "..." }`. Chat context includes excerpts of the latest three records per displayed todo; execution includes up to five recent records. Use the detail or CLI for the full history.
+
+There are no edit or delete endpoints for individual records. Each append and its audit event are committed together. A POST is one new entry; callers should check recent records before retrying after an uncertain network response.
 
 ## Run locally
 

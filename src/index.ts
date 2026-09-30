@@ -17,7 +17,7 @@ import {
 } from "./ai.ts";
 import { config, databasePath } from "./config.ts";
 import {
-  abandonRuns, addEvent, cleanDraft, cleanParent, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos,
+  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos,
   openDb, projectCounts, reorderTodos, runningRun, tagCounts, updateTodo,
 } from "./db.ts";
 import type { Action, Draft, Run, Source, Status, Todo } from "./types.ts";
@@ -84,6 +84,12 @@ export function createServer(opts: ServerOptions) {
     projects: projectCounts(db),
   });
 
+  const recordPage = (id: number, before?: number) => {
+    const rows = listRecords(db, id, 51, before);
+    const records = rows.slice(0, 50);
+    return { records, recordsNextBefore: rows.length > 50 ? records.at(-1)!.id : null };
+  };
+
   // ---- the AI entry
 
   const parse = async (req: Request): Promise<Response> => {
@@ -103,7 +109,7 @@ export function createServer(opts: ServerOptions) {
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
   const startExecution = (todo: Todo, extra: string, timezone: string): Live => {
-    const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id) });
+    const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
     const run = createRun(db, todo.id, prompt, null);
     const l = new Live(run);
     live.set(run.id, l);
@@ -176,6 +182,7 @@ export function createServer(opts: ServerOptions) {
         if (a.op === "add") { const { op: _o, ...draft } = a; results.push({ op: a.op, ok: true, todo: createTodo(db, draft, src) }); continue; }
         const before = getTodo(db, a.id);
         if (!before) { results.push({ op: a.op, id: a.id, ok: false, error: "no such todo" }); continue; }
+        if (a.op === "record") { appendRecord(db, a.id, a.content, src); results.push({ op: a.op, id: a.id, ok: true, todo: getTodo(db, a.id) }); continue; }
         if (a.op === "delete") { deleteTodo(db, a.id, src); results.push({ op: a.op, id: a.id, ok: true }); continue; }
         const patch = a.op === "update" ? (({ op: _o, id: _i, ...rest }) => rest)(a)
           : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : { status: "open" as const };
@@ -261,7 +268,7 @@ export function createServer(opts: ServerOptions) {
           const id = idOf(req.params.id); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
           const parent = todo.parentId ? getTodo(db, todo.parentId) : null;
-          return json({ ok: true, todo, parent, subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
+          return json({ ok: true, todo, parent, ...recordPage(todo.id), subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
         },
         PATCH: async (req) => {
           const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);
@@ -269,6 +276,25 @@ export function createServer(opts: ServerOptions) {
           try { const todo = updateTodo(db, id, b, source(b.source)); return todo ? json({ ok: true, todo }) : fail("no such todo", 404); } catch (e) { return fail((e as Error).message); }
         },
         DELETE: (req) => { const id = idOf(req.params.id); return id && deleteTodo(db, id) ? json({ ok: true }) : fail("no such todo", 404); },
+      },
+      "/api/todos/:id/records": {
+        GET: (req) => {
+          const id = idOf(req.params.id);
+          if (!id || !getTodo(db, id)) return fail("no such todo", 404);
+          const cursor = new URL(req.url).searchParams.get("before");
+          const before = cursor === null ? undefined : idOf(cursor);
+          if (before === null) return fail("before must be a positive record id");
+          return json({ ok: true, ...recordPage(id, before) });
+        },
+        POST: async (req) => {
+          const id = idOf(req.params.id);
+          if (!id || !getTodo(db, id)) return fail("no such todo", 404);
+          const b = await body(req);
+          try {
+            const record = appendRecord(db, id, b.content, source(b.source));
+            return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
+          } catch (e) { return fail((e as Error).message); }
+        },
       },
       "/api/todos/:id/execute": { POST: (req) => { const id = idOf(req.params.id); return id ? execute(req, id) : fail("no such todo", 404); } },
       "/api/todos/:id/runs": { GET: (req) => { const id = idOf(req.params.id); return id ? json({ ok: true, runs: listRuns(db, id) }) : fail("no such todo", 404); } },
@@ -280,7 +306,9 @@ export function createServer(opts: ServerOptions) {
       "/api/ai/context": {
         GET: (req) => {
           const u = new URL(req.url);
-          const ctx = chatContext(listTodos(db, { status: "all", limit: 300 }), { now: now(), timezone: tz(u.searchParams.get("timezone")), lang });
+          const todos = listTodos(db, { status: "all", limit: 300 });
+          const records = Object.fromEntries(todos.map((t) => [t.id, listRecords(db, t.id, 3)]));
+          const ctx = chatContext(todos, { now: now(), timezone: tz(u.searchParams.get("timezone")), lang, records });
           return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 });
         },
       },
