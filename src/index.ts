@@ -80,8 +80,8 @@ export function createServer(opts: ServerOptions) {
   const listBody = (status: string | null, q: string | null, tag: string | null, project: string | null) => ({
     ok: true,
     todos: listTodos(db, { status: (status as Status | "active" | "all") || "active", q: q || undefined, tag: tag || undefined, project: project || undefined }),
-    tags: tagCounts(db),
-    projects: projectCounts(db),
+    tags: tagCounts(db, status === "deferred" ? "deferred" : "active"),
+    projects: projectCounts(db, status === "deferred" ? "deferred" : "active"),
   });
 
   const recordPage = (id: number, before?: number) => {
@@ -185,7 +185,7 @@ export function createServer(opts: ServerOptions) {
         if (a.op === "record") { appendRecord(db, a.id, a.content, src); results.push({ op: a.op, id: a.id, ok: true, todo: getTodo(db, a.id) }); continue; }
         if (a.op === "delete") { deleteTodo(db, a.id, src); results.push({ op: a.op, id: a.id, ok: true }); continue; }
         const patch = a.op === "update" ? (({ op: _o, id: _i, ...rest }) => rest)(a)
-          : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : { status: "open" as const };
+          : a.op === "defer" ? { status: "deferred" as const } : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : { status: "open" as const };
         results.push({ op: a.op, id: a.id, ok: true, todo: updateTodo(db, a.id, patch, src) });
       } catch (e) {
         results.push({ op: a.op, id: "id" in a ? a.id : undefined, ok: false, error: (e as Error).message });
@@ -307,6 +307,12 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => {
           const u = new URL(req.url);
           const todos = listTodos(db, { status: "all", limit: 300 });
+          // The list cap must not hide a deferred parent and make its children look active.
+          const ids = new Set(todos.map((t) => t.id));
+          for (const t of [...todos]) if (t.parentId !== null && !ids.has(t.parentId)) {
+            const parent = getTodo(db, t.parentId);
+            if (parent) { todos.push(parent); ids.add(parent.id); }
+          }
           const records = Object.fromEntries(todos.map((t) => [t.id, listRecords(db, t.id, 3)]));
           const ctx = chatContext(todos, { now: now(), timezone: tz(u.searchParams.get("timezone")), lang, records });
           return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 });

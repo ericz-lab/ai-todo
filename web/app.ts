@@ -6,7 +6,7 @@
  * answer).
  */
 
-type Status = "open" | "doing" | "done" | "dropped";
+type Status = "open" | "doing" | "deferred" | "done" | "dropped";
 type Todo = { id: number; title: string; notes: string; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
@@ -90,7 +90,7 @@ applyTheme(savedTheme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "
 $("#theme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
 // ---- state
-type View = "today" | "upcoming" | "all" | "done";
+type View = "today" | "upcoming" | "all" | "done" | "deferred";
 let view: View = "all";
 let filterTag: string | null = null;
 let filterProject: string | null = null;
@@ -101,7 +101,7 @@ let projects: { project: string; n: number }[] = [];
 const els = { list: $("#list"), side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail") };
 
 async function load() {
-  const status = view === "done" ? "done" : "active";
+  const status = view === "done" ? "done" : view === "deferred" ? "deferred" : "active";
   const q = new URLSearchParams({ status });
   if (filterTag) q.set("tag", filterTag);
   if (filterProject) q.set("project", filterProject);
@@ -121,6 +121,7 @@ function renderSide() {
   $("#n-today").textContent = counts.today ? String(counts.today) : "";
   $("#n-upcoming").textContent = counts.upcoming ? String(counts.upcoming) : "";
   $("#n-all").textContent = counts.all ? String(counts.all) : "";
+  $("#n-deferred").textContent = view === "deferred" ? String(todos.length) : "";
   $("#n-done").textContent = view === "done" ? String(todos.length) : "";
   document.querySelectorAll<HTMLElement>(".view").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
   const chips = (list: { key: string; n: number }[], on: string | null, pick: (k: string | null) => void) => {
@@ -152,6 +153,7 @@ const titleOf = (id: number) => (todos.find((t) => t.id === id) ?? active.find((
 function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
   const tops = nest();
+  if (view === "deferred") return [{ key: "deferred", title: "暂不处理", items: tops }];
   if (view === "done") return [{ key: "done", title: "已完成", items: tops }];
   const g: Record<string, Group> = {
     doing: { key: "doing", title: "进行中", items: [] }, late: { key: "late", title: "已过期", late: true, items: [] }, today: { key: "today", title: "今天", items: [] },
@@ -168,7 +170,7 @@ function groups(): Group[] {
 function renderList() {
   const gs = groups();
   if (!gs.length) {
-    const hint = view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
+    const hint = view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
     els.list.innerHTML = `<div class="empty glass"><b>${view === "done" ? "空" : "轻松"}</b>${hint}</div>`;
     return;
   }
@@ -189,10 +191,11 @@ function rowHtml(t: Todo, nested = false): string {
   const meta: string[] = [];
   if (t.subtasks.total) meta.push(`<span class="badge prog${t.subtasks.done === t.subtasks.total ? " full" : ""}" title="子任务完成 ${t.subtasks.done} / ${t.subtasks.total}">☑ ${t.subtasks.done}/${t.subtasks.total}</span>`);
   if (t.parentId && !nested) meta.push(`<span class="badge parent" title="子任务，属于 #${t.parentId}">↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}</span>`);
-  if (t.due) meta.push(`<span class="badge due${isLate(t) && t.status !== "done" ? " late" : dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`);
+  if (t.due) meta.push(`<span class="badge due${isLate(t) && t.status !== "done" && t.status !== "deferred" ? " late" : dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`);
   if (t.project) meta.push(`<span class="badge proj">${esc(t.project)}</span>`);
   for (const tag of t.tags) meta.push(`<span class="badge">#${esc(tag)}</span>`);
   if (t.notes) meta.push(`<span title="${esc(t.notes.slice(0, 500))}">≡</span>`);
+  if (t.status === "deferred") meta.push(`<span class="badge">暂不处理</span>`);
   if (t.status === "done" && t.doneAt) meta.push(`<span>完成于 ${esc(fmtAgo(t.doneAt))}</span>`);
   return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}" tabindex="0">
     <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""}><span></span></label>
@@ -214,7 +217,7 @@ const d = {
   done: $<HTMLInputElement>("#d-done"), title: $<HTMLInputElement>("#d-title"), due: $<HTMLInputElement>("#d-due"), priority: $<HTMLSelectElement>("#d-priority"),
   project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), notesView: $("#d-notes-view"), extra: $<HTMLInputElement>("#d-extra"),
   records: $("#d-records"), recordContent: $<HTMLTextAreaElement>("#d-record-content"), recordAdd: $<HTMLButtonElement>("#d-record-add"), recordMore: $<HTMLButtonElement>("#d-record-more"),
-  runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"),
+  runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"), defer: $<HTMLButtonElement>("#d-defer"),
   subsN: $("#d-subs-n"), subsList: $("#d-subs-list"), subAdd: $<HTMLInputElement>("#d-sub-add"), parent: $("#d-parent"),
 };
 let curSubs: Todo[] = [];
@@ -242,7 +245,10 @@ function fillDetail(t: Todo) {
   d.done.checked = t.status === "done"; d.title.value = t.title; d.due.value = t.due ? (t.due.length > 10 ? t.due : `${t.due}T09:00`) : "";
   d.due.dataset.dayOnly = t.due && t.due.length === 10 ? "1" : "";
   d.priority.value = String(t.priority); d.project.value = t.project ?? ""; d.tags.value = t.tags.join(", "); d.notes.value = t.notes;
-  d.doing.textContent = t.status === "doing" ? "暂停" : "开始做";
+  d.doing.textContent = t.status === "doing" ? "返回待办" : "开始做";
+  d.defer.textContent = t.status === "deferred" ? "恢复待办" : "暂不处理";
+  d.defer.hidden = t.status === "done" || t.status === "dropped";
+  d.doing.hidden = t.status === "deferred";
   showNotes(t.notes ? "view" : "edit");
 }
 /** Notes are Markdown: rendered until clicked, a textarea while editing, rendered again on blur. */
@@ -289,7 +295,7 @@ d.project.onchange = () => scheduleSave({ project: d.project.value.trim() || nul
 d.tags.onchange = () => scheduleSave({ tags: d.tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
 d.done.onchange = async () => {
   if (!cur) return;
-  const open = curSubs.filter((s) => s.status === "open" || s.status === "doing").length;
+  const open = curSubs.filter((s) => s.status === "open" || s.status === "doing" || s.status === "deferred").length;
   await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) });
   toast(d.done.checked ? (open ? `已完成，连同 ${open} 个子任务` : "已完成") : "已重新打开");
   closeDetail();
@@ -314,7 +320,8 @@ function renderSubs(parent: Todo | null, subs: Todo[]) {
     <div class="subrow ${s.status}" data-id="${s.id}">
       <label class="check"><input type="checkbox"${s.status === "done" ? " checked" : ""}><span></span></label>
       <span class="title">${esc(s.title)}</span>
-      ${s.due ? `<span class="badge due${isLate(s) && s.status !== "done" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
+      ${s.status === "deferred" ? `<span class="badge">暂不处理</span>` : ""}
+      ${s.due ? `<span class="badge due${isLate(s) && s.status !== "done" && s.status !== "deferred" && cur?.status !== "deferred" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
     </div>`).join("");
   d.subsList.querySelectorAll<HTMLElement>(".subrow").forEach((row) => {
     const id = Number(row.dataset.id);
@@ -343,6 +350,20 @@ d.subAdd.onkeydown = async (e) => {
     await refreshSubs();
   } catch (err) { toast((err as Error).message); }
   finally { d.subAdd.disabled = false; d.subAdd.focus(); }
+};
+d.defer.onclick = async () => {
+  if (!cur) return;
+  const id = cur.id;
+  const restoring = cur.status === "deferred";
+  d.defer.disabled = true;
+  try {
+    clearTimeout(saveTimer); await flushSave();
+    const r = await api<{ todo: Todo }>(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: restoring ? "open" : "deferred" }) });
+    await load();
+    if (cur?.id === id) await openDetail(id);
+    toast(restoring ? (isLate(r.todo) ? "已恢复待办，原截止日期已过，请调整日期" : "已恢复待办") : "已暂不处理，可从左侧列表恢复");
+  } catch (e) { toast((e as Error).message); }
+  finally { d.defer.disabled = false; }
 };
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
 $("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
@@ -397,7 +418,7 @@ function runHtml(r: Run): string {
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = { "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";
@@ -592,7 +613,7 @@ async function mountChat() {
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
         const ul = appliedNotes.get(m.id);
-        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", reopen: "重开", record: "追加记录", delete: "删除" };
+        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
         toast(`AI 改了清单：${ok}/${r.results.length} 项成功`);

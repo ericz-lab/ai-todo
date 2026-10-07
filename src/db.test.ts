@@ -144,3 +144,30 @@ describe("history of typed edits", () => {
     expect(kinds).toEqual([["done", "status"], ["edited", "notes"], ["edited", "notes"], ["edited", "priority"], ["edited", "title"], ["edited", "title"], ["edited", "notes"], ["created", ""]]);
   });
 });
+
+test("deferred parents hide active children without changing them, and restoration preserves data", () => {
+  const db = openDb(":memory:");
+  try {
+    const parent = createTodo(db, { title: "Later", due: "2026-01-01", project: "Later project", tags: ["later"] });
+    const child = createTodo(db, { title: "Step", parentId: parent.id, project: "Later project", tags: ["later"] });
+    const held = createTodo(db, { title: "Independent hold", parentId: parent.id });
+    updateTodo(db, child.id, { status: "doing" });
+    updateTodo(db, held.id, { status: "deferred" });
+    updateTodo(db, parent.id, { status: "deferred" }, "cli");
+    expect(listTodos(db)).toEqual([]);
+    expect(getTodo(db, child.id)?.status).toBe("doing");
+    expect(tagCounts(db)).toEqual([]);
+    expect(projectCounts(db)).toEqual([]);
+    expect(tagCounts(db, "deferred")).toEqual([{ tag: "later", n: 1 }]);
+    expect(projectCounts(db, "deferred")).toEqual([{ project: "Later project", n: 1 }]);
+    expect(listTodos(db, { status: "deferred", project: "Later project", tag: "later" }).map(t => t.id)).toEqual([parent.id]);
+    expect(listTodos(db, { status: "all" })).toHaveLength(3);
+    expect(listEvents(db, parent.id)[0]).toMatchObject({ kind: "deferred", data: { source: "cli" } });
+    expect(updateTodo(db, parent.id, { status: "open" })).toMatchObject({ due: "2026-01-01", doneAt: null });
+    expect(listTodos(db).map(t => t.id)).toEqual([child.id, parent.id]);
+    expect(getTodo(db, held.id)?.status).toBe("deferred");
+    updateTodo(db, parent.id, { status: "done" });
+    expect(getTodo(db, held.id)?.status).toBe("done");
+    expect(getTodo(db, child.id)?.status).toBe("done");
+  } finally { db.close(); }
+});

@@ -19,6 +19,7 @@
       <button class="view on" data-view="all"><span>全部</span><b id="n-all"></b></button>
       <button class="view" data-view="today"><span>今天</span><b id="n-today"></b></button>
       <button class="view" data-view="upcoming"><span>即将</span><b id="n-upcoming"></b></button>
+      <button class="view" data-view="deferred"><span>暂不处理</span><b id="n-deferred"></b></button>
       <button class="view" data-view="done"><span>已完成</span><b id="n-done"></b></button>
     </nav>
     <div class="side-section"><span class="sub">项目</span><div class="chips" id="projects"></div></div>
@@ -69,6 +70,7 @@
       <input id="d-extra" class="d-extra" placeholder="给这次执行的补充说明（可选）" autocomplete="off">
       <div class="grow"></div>
       <button class="btn small" id="d-doing">开始做</button>
+      <button class="btn small" id="d-defer">暂不处理</button>
       <button class="btn small danger" id="d-delete">删除</button>
     </div>
     <div class="subs" id="d-subs">

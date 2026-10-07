@@ -12,7 +12,7 @@ One AI box at the top, three uses:
 
 On a task, `✦ 执行` (or the button in its detail) hands it to the model with `WebSearch` and `WebFetch`; the answer streams in, is kept as a run under the task, and survives closing the page.
 
-Views: 今天 (doing, overdue, due today), 即将, 全部, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
+Views: 今天 (doing, overdue, due today), 即将, 全部, 暂不处理, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
 
 Subtasks: a task can have steps, one level deep. They sit indented under their task in the list, which shows `☑ done/total`; each is a full todo (due, execute, history). Add them in the detail (they keep the task's project and tags), from the chat ("拆成三步"), or with `--parent`. Finishing a task finishes its open steps; deleting it deletes them. `︿` folds the AI box.
 
@@ -52,7 +52,7 @@ Without `SPACE_API_URL` and `SPACE_APP_TOKEN` the list works and every AI featur
 CLI over the running service (also what the `planner` agent uses):
 
 ```bash
-bun src/cli.ts list [--all|--done] [--q text] [--tag t] [--project p]
+bun src/cli.ts list [--all|--done|--deferred] [--q text] [--tag t] [--project p]
 bun src/cli.ts add "订机票" --due 2026-09-26 --priority 2 --tags 出差
 bun src/cli.ts add "订酒店" --parent 3                 # a subtask of #3
 bun src/cli.ts move 5 3 | move 5 none                 # make #5 a subtask of #3, or take it out
@@ -68,3 +68,13 @@ A bare repository with `deploy/post-receive` on the host (`git push seoul main`)
 This is an [ai-space](https://github.com/ericz-lab/ai-space) app; the contract is its `docs/app-spec.md`.
 
 All AI features inherit the default model selected in ai-space Settings. Legacy `TODO_MODEL` values are ignored.
+
+## Deferred tasks
+
+Use **暂不处理** beside **开始做** in task details to keep a task without putting it on the daily agenda. The sidebar's **暂不处理** view sits between **全部** and **已完成**, with project and tag filters. Details offer **恢复待办** to reopen the task. The former **暂停** action is now **返回待办** and still returns a doing task to the active list.
+
+Deferred tasks retain dates, notes, records and execution history, but leave Today, Upcoming, the active list/counts, overdue totals and the Space widget. Restoration keeps the original due date and warns in the page when it is overdue. There is no automatic resumption; append an operation record for an optional reason.
+
+Deferring a parent hides its active children from daily lists and AI plans without changing their stored statuses. Reopening the parent reveals those children again; independently deferred children stay deferred. A child can be deferred on its own. Completing a parent completes all unfinished children, including deferred ones, with individual history events.
+
+CLI: `bun src/cli.ts defer <id>`, `list --deferred`, and `reopen <id>`. API: `PATCH /api/todos/:id` with `{ "status": "deferred" }` or `{ "status": "open" }`; `GET /api/todos?status=deferred` lists explicitly deferred tasks. Chat supports `op: defer` and `op: reopen`; deferred tasks and children hidden by their parent are supplied separately from active tasks and excluded from daily plans by default. Existing databases accept the new text status without a schema migration.

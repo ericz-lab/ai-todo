@@ -53,7 +53,7 @@ Dates are the person's local wall clock, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; res
 ## API, for anything the CLI lacks
 
 ```
-GET    /api/todos?status=active|done|all&q=&tag=&project=    { todos, tags, projects }
+GET    /api/todos?status=active|deferred|done|all&q=&tag=&project=    { todos, tags, projects }
 POST   /api/todos            { title, notes?, due?, priority?, tags?, project?, parentId?, source: "cli" }
 POST   /api/todos/bulk       { drafts: [...], parentId?, source: "cli" }   parentId: every draft becomes its subtask
 GET    /api/todos/:id        { todo, parent, subtasks, events, runs, records, recordsNextBefore }
@@ -68,3 +68,5 @@ POST   /api/todos/:id/execute  { extra? } -> text/event-stream
 Answers are `{ ok: true, ... }` or `{ ok: false, error }`.
 
 Operation records are append-only, support Markdown, and allow 1–20,000 characters. Correct earlier claims with a new entry. After an uncertain POST response, inspect recent records before retrying to avoid duplicates.
+
+For 暂不处理, use `todo defer <id>`; use `todo list --deferred` to find deferred tasks and `todo reopen <id>` to restore. Dates, records and history remain intact. A deferred parent hides its active children without changing their statuses; daily plans exclude these tasks unless requested.

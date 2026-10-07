@@ -49,3 +49,15 @@ describe("chat actions", () => {
     expect(ctx.system).toContain("todo-drafts");
   });
 });
+
+test("deferred tasks and hidden children stay out of the active chat plan", () => {
+  const t = (id: number, status: Todo["status"], parentId: number | null = null): Todo => ({ id, title: `t${id}`, notes: "", status, priority: 0, due: null, tags: [], project: null, source: "manual", parentId, subtasks: { total: 0, done: 0 }, position: id, createdAt: "", updatedAt: "", doneAt: null });
+  const ctx = chatContext([t(1, "deferred"), t(2, "doing", 1), t(3, "open")], { now: new Date("2026-10-08T00:00:00Z"), timezone: "Asia/Seoul", lang: "zh" });
+  const active = ctx.text.split("Open tasks (1):")[1]!.split("Deferred tasks")[0]!;
+  expect(active).toContain("#3");
+  expect(active).not.toContain("#1");
+  expect(active).not.toContain("#2");
+  expect(ctx.text).toContain("Deferred tasks — exclude from daily plans (2)");
+  expect(ctx.text).toContain("subtask of #1");
+  expect(extractActions('```todo-actions\n[{"op":"defer","id":1},{"op":"reopen","id":1}]\n```').actions).toEqual([{ op: "defer", id: 1 }, { op: "reopen", id: 1 }]);
+});

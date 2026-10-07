@@ -178,11 +178,12 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
 2. A CHANGE TO THE LIST ("把明天的都推到周五", "3 完成了", "把年终总结拆成三步", "删掉那条买牛奶"). Do it: one fenced block, language \`${ACTIONS_FENCE}\`, holding a JSON array of operations; the app applies them and shows the person what changed. Outside the block, one or two lines saying what you did. Operations:
    {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…","parentId":N}  (same fields as a draft; parentId makes it a subtask)
    {"op":"update","id":N, …any of title, notes, due, priority, tags, project, parentId…}  (parentId null takes a subtask out of its parent)
-   {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
+   {"op":"defer","id":N}   {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
    {"op":"record","id":N,"content":"…"}  (append progress, actions taken or acceptance results; never replace notes for these)
    - Operation records are append-only. Correct an earlier entry by appending a new one. Distinguish verified facts from unverified claims.
+   - "暂不处理" uses defer; "恢复待办" uses reopen. Deferred tasks and unfinished children of deferred parents are excluded from daily plans unless explicitly requested. Deferring keeps dates and child statuses; reopening a parent makes its active children visible again.
    - Only ids from the list. Never delete without being asked; prefer done or update.
-   - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its open subtasks; deleting it deletes them.
+   - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its unfinished subtasks, including deferred ones; deleting it deletes them.
    - Splitting a task ("拆成三步", "拆分"): add each part as a subtask with "parentId" set to the original's id, keeping its project and tags; leave the original open.
    - When the request is ambiguous (which task? which day?), ask instead and put no block.
 
@@ -203,7 +204,10 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     const history = records.length ? "\n  Recent operation records (newest first, excerpts):\n" + records.map((r) => `    [${r.createdAt}, ${r.source}] ${r.content.replace(/\s+/g, " ").slice(0, 500)}`).join("\n") : "";
     return `- ${bits.join(" · ")}${t.notes ? `\n  notes: ${t.notes.replace(/\s+/g, " ").slice(0, 200)}` : ""}${history}`;
   };
-  const active = todos.filter((t) => t.status === "open" || t.status === "doing");
+  const deferredIds = new Set(todos.filter((t) => t.status === "deferred").map((t) => t.id));
+  const deferred = todos.filter((t) => t.status === "deferred" || ((t.status === "open" || t.status === "doing") && t.parentId !== null && deferredIds.has(t.parentId)));
+  const hiddenIds = new Set(deferred.map((t) => t.id));
+  const active = todos.filter((t) => (t.status === "open" || t.status === "doing") && !hiddenIds.has(t.id));
   const done = todos.filter((t) => t.status === "done").slice(0, 15);
   // Subtasks follow their parent, indented; one whose parent is not open says whose step it is.
   const openIds = new Set(active.map((t) => t.id));
@@ -217,6 +221,9 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     "",
     `Open tasks (${active.length}):`,
     tree.length ? tree.join("\n") : "- (none)",
+    "",
+    `Deferred tasks — exclude from daily plans (${deferred.length}):`,
+    deferred.length ? deferred.map((t) => line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : "")).join("\n") : "- (none)",
     "",
     `Recently done (${done.length}):`,
     done.length ? done.map(line).join("\n") : "- (none)",
@@ -262,7 +269,7 @@ export function cleanAction(v: unknown): Action {
     case "record": return { op, id: id(), content: cleanRecord(a.content) };
     case "add": return { op, ...cleanDraft(a) };
     case "update": { const { op: _o, id: _i, ...rest } = a; return { op, id: id(), ...cleanPatch(rest) }; }
-    case "done": case "start": case "reopen": case "delete": return { op, id: id() };
+    case "done": case "start": case "reopen": case "delete": case "defer": return { op, id: id() };
     default: throw new Error(`unknown op ${op}`);
   }
 }

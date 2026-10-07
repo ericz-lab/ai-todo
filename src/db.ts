@@ -177,11 +177,13 @@ export function cleanPatch(v: unknown): Patch {
 
 export type ListFilter = { status?: Status | "active" | "all"; q?: string; tag?: string; project?: string; limit?: number };
 
+const ACTIVE_WHERE = "status IN ('open','doing') AND NOT EXISTS (SELECT 1 FROM todos p WHERE p.id = todos.parent_id AND p.status = 'deferred')";
+
 export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
   const where: string[] = [];
   const args: (string | number)[] = [];
   const status = f.status ?? "active";
-  if (status === "active") where.push("status IN ('open','doing')");
+  if (status === "active") where.push(ACTIVE_WHERE);
   else if (status !== "all") { where.push("status = ?"); args.push(status); }
   if (f.q) { where.push("(title LIKE ? OR notes LIKE ? OR tags LIKE ? OR project LIKE ?)"); const like = `%${f.q}%`; args.push(like, like, like, like); }
   if (f.tag) { where.push("tags LIKE ?"); args.push(`%${JSON.stringify(f.tag)}%`); }
@@ -312,7 +314,7 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
     if (kind !== "edited" || !mergeEdit(db, id, source, changed, t)) addEvent(db, id, kind, { source, changed }, t);
     // Finishing a todo finishes its steps still open; each gets its own history line.
     if (changed.status && next.status === "done") {
-      for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing") updateTodo(db, sub.id, { status: "done" }, source);
+      for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing" || sub.status === "deferred") updateTodo(db, sub.id, { status: "done" }, source);
     }
   })();
   return getTodo(db, id);
@@ -338,13 +340,15 @@ export function reorderTodos(db: Database, ids: number[]): void {
   tx(ids);
 }
 
-export function tagCounts(db: Database): { tag: string; n: number }[] {
+export function tagCounts(db: Database, status: ListFilter["status"] = "active"): { tag: string; n: number }[] {
   const counts = new Map<string, number>();
-  for (const t of listTodos(db, { status: "active" })) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  for (const t of listTodos(db, { status })) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
   return [...counts].map(([tag, n]) => ({ tag, n })).sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag));
 }
-export function projectCounts(db: Database): { project: string; n: number }[] {
-  return db.query("SELECT project, COUNT(*) AS n FROM todos WHERE status IN ('open','doing') AND project IS NOT NULL GROUP BY project ORDER BY n DESC, project").all() as { project: string; n: number }[];
+export function projectCounts(db: Database, status: ListFilter["status"] = "active"): { project: string; n: number }[] {
+  const where = status === "active" ? ACTIVE_WHERE : status === "all" ? "1 = 1" : "status = ?";
+  const args = status === "active" || status === "all" ? [] : [status];
+  return db.query(`SELECT project, COUNT(*) AS n FROM todos WHERE ${where} AND project IS NOT NULL GROUP BY project ORDER BY n DESC, project`).all(...args) as { project: string; n: number }[];
 }
 
 // ---- runs

@@ -1,6 +1,6 @@
 /** Data model of ai-todo. Dates are local wall-clock strings: `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, no zone. */
 
-export type Status = "open" | "doing" | "done" | "dropped";
+export type Status = "open" | "doing" | "deferred" | "done" | "dropped";
 /** 0 none, 1 low, 2 medium, 3 high. */
 export type Priority = 0 | 1 | 2 | 3;
 export type Source = "manual" | "ai" | "chat" | "cli";
@@ -63,10 +63,10 @@ export type Run = {
 /** An operation the chat assistant asks the app to perform. */
 export type Action =
   | ({ op: "add" } & Draft)
-  | { op: "done" | "reopen" | "delete" | "start"; id: number }
+  | { op: "done" | "reopen" | "delete" | "start" | "defer"; id: number }
   | ({ op: "update"; id: number } & Patch)
   | { op: "record"; id: number; content: string };
 
-export const STATUSES: Status[] = ["open", "doing", "done", "dropped"];
+export const STATUSES: Status[] = ["open", "doing", "deferred", "done", "dropped"];
 export const PRIORITIES: Priority[] = [0, 1, 2, 3];
 export const SOURCES: Source[] = ["manual", "ai", "chat", "cli"];

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { openDb } from "./db.ts";
+import { createTodo, updateTodo, openDb } from "./db.ts";
 import { createServer } from "./index.ts";
 import type { Run, Todo } from "./types.ts";
 
@@ -181,4 +181,60 @@ describe("service", () => {
     expect(r.status).toBe(502);
     server.stop(true);
   });
+});
+
+test("defer through chat and CLI, filter through API, omit from widget, then restore", async () => {
+  const db = openDb(":memory:");
+  const { server } = createServer({ db, port: 0, web: false });
+  const url = `http://127.0.0.1:${server.port}`;
+  const request = async (path: string, body?: unknown, method = "POST") => {
+    const res = await fetch(url + path, body === undefined ? {} : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(res.ok).toBe(true);
+    return res.json();
+  };
+  const cli = async (...args: string[]) => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", ...args], { env: { ...process.env, TODO_URL: url }, stdout: "pipe", stderr: "pipe" });
+    const output = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    return output;
+  };
+  try {
+    const { todo } = await request("/api/todos", { title: "Deferred integration", due: "2026-01-01", tags: ["later"], project: "Later" });
+    const { todo: child } = await request("/api/todos", { title: "Hidden child", parentId: todo.id });
+    await request(`/api/todos/${todo.id}/records`, { content: "Keep this evidence" });
+    const applied = await request("/api/ai/apply", { text: '```todo-actions\n' + JSON.stringify([{ op: "defer", id: todo.id }]) + '\n```' });
+    expect(JSON.stringify(applied)).toContain('"deferred"');
+    expect((await request("/api/todos")).todos).toEqual([]);
+    expect((await request("/api/widget")).items).toEqual([]);
+    const held = await request("/api/todos?status=deferred&tag=later&project=Later");
+    expect(held.todos.map((t: Todo) => t.id)).toEqual([todo.id]);
+    expect(held.tags).toEqual([{ tag: "later", n: 1 }]);
+    expect(held.projects).toEqual([{ project: "Later", n: 1 }]);
+    expect(await cli("list", "--deferred")).toContain("Deferred integration");
+    await cli("reopen", String(todo.id));
+    expect((await request("/api/todos")).todos).toHaveLength(2);
+    expect((await request("/api/widget")).items).toHaveLength(2);
+    await cli("defer", String(child.id));
+    expect((await request("/api/todos")).todos.map((t: Todo) => t.id)).toEqual([todo.id]);
+    const detail = await request(`/api/todos/${todo.id}`);
+    expect(detail.todo.due).toBe("2026-01-01");
+    expect(detail.records[0].content).toBe("Keep this evidence");
+    expect(detail.events.some((e: { kind: string }) => e.kind === "deferred")).toBe(true);
+  } finally { server.stop(true); db.close(); }
+});
+
+
+test("chat retains deferred parents beyond its list cap", async () => {
+  const db = openDb(":memory:");
+  const parent = createTodo(db, { title: "Deferred beyond cap" });
+  updateTodo(db, parent.id, { status: "deferred" });
+  const child = createTodo(db, { title: "Hidden doing step", parentId: parent.id });
+  updateTodo(db, child.id, { status: "doing" });
+  for (let i = 0; i < 301; i++) createTodo(db, { title: `Active ${i}`, project: "Active project" });
+  const { server } = createServer({ db, port: 0, web: false });
+  try {
+    const ctx = await (await fetch(`http://127.0.0.1:${server.port}/api/ai/context`)).json();
+    expect(ctx.text).toContain("Deferred tasks — exclude from daily plans (2)");
+    expect(ctx.text.split("Deferred tasks")[0]).not.toContain("Hidden doing step");
+  } finally { server.stop(true); db.close(); }
 });

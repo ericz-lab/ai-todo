@@ -1,10 +1,10 @@
 /**
  * Command line over the running service, for the `planner` agent and for the shell:
- *   bun src/cli.ts list [--all|--done] [--q text] [--tag t] [--project p]
+ *   bun src/cli.ts list [--all|--done|--deferred] [--q text] [--tag t] [--project p]
  *   bun src/cli.ts record <id> <content> | records <id> [--before id]
  *   bun src/cli.ts show <id>
  *   bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text] [--parent id]
- *   bun src/cli.ts done <id> | start <id> | reopen <id> | rm <id>      (done and rm take the subtasks along)
+ *   bun src/cli.ts done <id> | start <id> | defer <id> | reopen <id> | rm <id>      (done and rm take the subtasks along)
  *   bun src/cli.ts move <id> <parent-id|none>   make it a subtask of another todo, or take it out
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
  *   bun src/cli.ts execute <id> [--extra text]   hand the todo to the AI, print the result
@@ -31,7 +31,7 @@ const line = (t: Todo, indent = "") => `#${t.id}\t${t.status}\t${t.due ?? "-"}\t
 try {
   switch (cmd) {
     case "list": {
-      const q = new URLSearchParams({ status: "all" in flags ? "all" : "done" in flags ? "done" : "active" });
+      const q = new URLSearchParams({ status: "all" in flags ? "all" : "done" in flags ? "done" : "deferred" in flags ? "deferred" : "active" });
       for (const k of ["q", "tag", "project"]) if (flags[k]) q.set(k, flags[k]!);
       const { todos } = (await call(`/api/todos?${q}`)) as { todos: Todo[] };
       if (!todos.length) console.log("(none)");
@@ -84,9 +84,9 @@ try {
       console.log(line(todo) + (todo.parentId ? ` (subtask of #${todo.parentId})` : ""));
       break;
     }
-    case "done": case "start": case "reopen": {
+    case "defer": case "done": case "start": case "reopen": {
       const id = Number(args[0]); if (!id) die(`usage: ${cmd} <id>`);
-      const status = cmd === "done" ? "done" : cmd === "start" ? "doing" : "open";
+      const status = cmd === "defer" ? "deferred" : cmd === "done" ? "done" : cmd === "start" ? "doing" : "open";
       const { todo } = (await call(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status, source: "cli" }) })) as { todo: Todo };
       console.log(line(todo));
       break;
@@ -127,7 +127,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
+      console.log("usage: list [--all|--done|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
   }
 } catch (e) {
   die((e as Error).message);
