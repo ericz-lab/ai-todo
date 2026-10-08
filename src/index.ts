@@ -21,6 +21,7 @@ import {
   openDb, projectCounts, reorderTodos, runningRun, tagCounts, updateTodo,
 } from "./db.ts";
 import type { Action, Draft, Run, Source, Status, Todo } from "./types.ts";
+import { widgetPayload } from "./widget.ts";
 
 export interface ServerOptions {
   db: Database;
@@ -211,15 +212,7 @@ export function createServer(opts: ServerOptions) {
     return new Response(up.body, { status: up.status, headers: out });
   };
 
-  const widget = () => {
-    const todos = listTodos(db, { status: "active", limit: 20 });
-    const items = todos.map((t) => ({
-      text: `${t.parentId ? "↳ " : ""}${t.status === "doing" ? "▶ " : ""}${t.priority === 3 ? "‼ " : t.priority === 2 ? "! " : ""}${t.title}${t.due ? ` · ${t.due.replace("T", " ")}` : ""}`,
-      url: publicBase ? `${publicBase}/?todo=${t.id}` : undefined,
-      time: t.updatedAt,
-    }));
-    return { ok: true, items };
-  };
+  const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
 
   const server = Bun.serve({
     hostname: "127.0.0.1",

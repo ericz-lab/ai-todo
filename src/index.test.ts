@@ -61,7 +61,10 @@ describe("service", () => {
   let todo: Todo;
   test("health, widget when empty", async () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
-    expect((await j("/api/widget")).body).toEqual({ ok: true, items: [] });
+    expect((await j("/api/widget")).body).toEqual({
+      ok: true, items: [], asOf: "2026-09-22T02:30:00.000Z", staleAfter: 600,
+      blocks: [{ type: "metric", label: { en: "Due by today", zh: "今天到期" }, value: 0, caption: { en: "Nothing open", zh: "清单已清空" }, tone: "neutral", url: "/" }],
+    });
   });
   test("crud", async () => {
     const c = await j("/api/todos", { method: "POST", body: JSON.stringify({ title: " 买牛奶 ", due: "2026-09-23", tags: "购物", priority: 1 }) });

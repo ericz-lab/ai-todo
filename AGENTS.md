@@ -29,6 +29,7 @@ space.yaml           * the manifest: identity, service, agent, widget, storage
 src/index.ts         * the service: routes, execution fan-out, chat proxy, boot
 src/ai.ts            * model-service client, the three prompts, answer readers (JSON array, todo-actions)
 src/db.ts            * schema, cleaning of drafts/patches, todos, events, runs
+src/widget.ts          the panel card: items and state blocks
 src/types.ts           data model
 src/config.ts          environment
 src/cli.ts             the CLI the planner agent uses
@@ -43,7 +44,7 @@ deploy.sh              rsync alternative to the hook
 ## Conventions
 
 - Page routes trust loopback (the edge holds the login); there is no write token.
-- Widget contract: `GET /api/widget` -> `{ ok: true, items: [{ text, url, time }] }`, active todos due first, at most twenty.
+- Widget contract: `GET /api/widget` -> `{ ok: true, items: [{ text, url, time }], asOf, staleAfter, blocks }` (`src/widget.ts`). `items` (active todos due first, at most twenty) stays for panels without blocks. `blocks`: a hero metric of todos due by today in the `TODO_TZ` wall clock (tone negative when any is overdue, warning when due today), the next three todos as `status` rows linking `/?todo=<id>`, a 7-day bar trend of completions counted from `done` events, then two more todos; an empty list is the hero alone (plus the trend if anything was finished).
 - `/space/chat/*` is a dumb pass-through to ai-space (only `content-type`, `accept`, `content-length`, `if-none-match` forwarded; `timeout: false` upstream).
 - Tests sit next to the code (`src/*.test.ts`), use `:memory:` databases and a stub `Bun.serve` standing in for ai-space; no network, no model.
 - English in code, comments, docs and commits; the page and the model output are Chinese (`TODO_LANG=zh`).

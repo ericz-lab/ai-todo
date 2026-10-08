@@ -41,7 +41,7 @@ agents:
 skills:
   - path: skills/todo
 
-# Panel card: what is due next.
+# Panel card: what is due by today, the next todos and the week's completions (items + blocks).
 widgets:
   - name: next
     title: Todo · Next
