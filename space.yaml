@@ -29,7 +29,7 @@ service:
 # Chat identity on the panel: reads and changes the list through the CLI.
 agents:
   - name: planner
-    title: Planner
+    title: Todo Planner
     description: Reads the list, adds tasks, marks them done and plans the day through the CLI.
     avatar: agents/planner.svg
     prompt: agents/planner.md
@@ -44,7 +44,7 @@ skills:
 # Panel card: what is due by today, the next todos and the week's completions (items + blocks).
 widgets:
   - name: next
-    title: Todo · Next
+    title: Todo · Up Next
     kind: items
     source: /api/widget
     link: /
