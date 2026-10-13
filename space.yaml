@@ -36,6 +36,18 @@ agents:
     tools: [Read, Grep, Glob, "Bash(bun src/cli.ts *)"]
     skills: [./skills/todo]
 
+# What other apps call through ai-space (docs/events.md). The caller's name goes into each
+# todo's `created` event.
+provides:
+  parse:
+    description: Turn free text into task drafts with dates, priorities and tags resolved; nothing is added. Body { text, timezone? (IANA) }; answers { ok, drafts [{ title, notes?, due?, priority?, tags?, project? }] }. One model call, tens of seconds.
+    http: { method: POST, path: /api/ai/parse }
+    timeout: 3m
+  add:
+    description: Add tasks, all or nothing. Body { drafts [{ title, notes?, due? (YYYY-MM-DD or YYYY-MM-DDTHH:MM), priority? (0-3), tags?, project? }], parentId?, source? (ai or manual) }; answers { ok, todos } with their ids.
+    http: { method: POST, path: /api/todos/bulk }
+    timeout: 30s
+
 # The `todo` skill: ai-space links it into the workspace on every sync, so any agent session
 # started in the workspace can add, list and finish tasks through the CLI and the API.
 skills:

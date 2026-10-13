@@ -77,6 +77,8 @@ export function createServer(opts: ServerOptions) {
     try { const v = await req.json(); return v && typeof v === "object" ? (v as Record<string, unknown>) : {}; } catch { return {}; }
   };
   const idOf = (s: string): number | null => { const n = Number(s); return Number.isInteger(n) && n > 0 ? n : null; };
+  /** A call through ai-space's bus (space.yaml `provides`) names the calling app; it goes into the todo's `created` event. */
+  const caller = (req: Request): Record<string, unknown> => { const app = req.headers.get("x-space-caller")?.trim().slice(0, 100); return app ? { caller: app } : {}; };
   const source = (v: unknown): Source => (["manual", "ai", "chat", "cli"].includes(String(v)) ? (v as Source) : "manual");
   const listBody = (status: string | null, q: string | null, tag: string | null, project: string | null) => ({
     ok: true,
@@ -229,7 +231,7 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => { const u = new URL(req.url); return json(listBody(u.searchParams.get("status"), u.searchParams.get("q"), u.searchParams.get("tag"), u.searchParams.get("project"))); },
         POST: async (req) => {
           const b = await body(req);
-          try { return json({ ok: true, todo: createTodo(db, cleanDraft(b), source(b.source)) }, 201); } catch (e) { return fail((e as Error).message); }
+          try { return json({ ok: true, todo: createTodo(db, cleanDraft(b), source(b.source), caller(req)) }, 201); } catch (e) { return fail((e as Error).message); }
         },
       },
       "/api/todos/bulk": {
@@ -242,7 +244,8 @@ export function createServer(opts: ServerOptions) {
             // `parentId` at the top makes every draft without its own a subtask of that todo.
             const parentId = cleanParent(b.parentId);
             const drafts = list.map(cleanDraft).map((d) => (parentId && !d.parentId ? { ...d, parentId } : d));
-            const todos = db.transaction(() => drafts.map((d) => createTodo(db, d, source(b.source ?? "ai"))))();
+            const origin = caller(req);
+            const todos = db.transaction(() => drafts.map((d) => createTodo(db, d, source(b.source ?? "ai"), origin)))();
             return json({ ok: true, todos }, 201);
           } catch (e) { return fail((e as Error).message); }
         },

@@ -143,6 +143,16 @@ describe("service", () => {
     expect(((await j(`/api/todos/${todo.id}`)).body.todo as Todo).status).toBe("done");
     expect((await j("/api/ai/apply", { method: "POST", body: JSON.stringify({}) })).status).toBe(400);
   });
+  test("a todo added by another app through the bus records its caller", async () => {
+    const r = await j("/api/todos/bulk", { method: "POST", headers: { "x-space-caller": "ai-spark" }, body: JSON.stringify({ drafts: [{ title: "from an idea" }], source: "ai" }) });
+    const id = (r.body.todos as Todo[])[0]!.id;
+    const detail = (await j(`/api/todos/${id}`)).body as { events: { kind: string; data: Record<string, unknown> }[] };
+    expect(detail.events.find((e) => e.kind === "created")?.data).toEqual({ source: "ai", caller: "ai-spark" });
+    const plain = await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "typed here" }) });
+    const own = (await j(`/api/todos/${(plain.body.todo as Todo).id}`)).body as { events: { kind: string; data: Record<string, unknown> }[] };
+    expect(own.events.find((e) => e.kind === "created")?.data).toEqual({ source: "manual" });
+  });
+
   test("subtasks: created in bulk under a parent, shown with it, split by the chat", async () => {
     const p = (await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "年终总结", tags: ["工作"] }) })).body.todo as Todo;
     const bulk = await j("/api/todos/bulk", { method: "POST", body: JSON.stringify({ parentId: p.id, drafts: [{ title: "收集数据" }, { title: "写初稿" }] }) });
