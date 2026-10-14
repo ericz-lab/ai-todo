@@ -65,6 +65,7 @@ widgets:
 
 storage:
   database: sqlite
+  blobs: s3
 
 # `space app deploy` (the post-receive hook) runs these after checkout, after bun install
 # --frozen-lockfile; a failure keeps the running service (ai-space docs/app-spec.md#deploy).

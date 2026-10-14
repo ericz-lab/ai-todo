@@ -43,7 +43,8 @@ export type Patch = Partial<Pick<Todo, "title" | "notes" | "status" | "priority"
 export type TodoEvent = { id: number; todoId: number; kind: string; data: Record<string, unknown>; at: string };
 
 /** A progress or acceptance note, appended separately from editable task notes. */
-export type OperationRecord = { id: number; todoId: number; content: string; source: Source; createdAt: string };
+export type RecordImage = { key: string; name: string; mime: string; size: number };
+export type OperationRecord = { attachments?: RecordImage[]; id: number; todoId: number; content: string; source: Source; createdAt: string };
 
 /** One AI execution of a todo. */
 export type Run = {

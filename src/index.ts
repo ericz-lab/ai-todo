@@ -10,6 +10,8 @@
  * with the app token, which is where the conversations live and where the chat widget comes from.
  */
 import type { Database } from "bun:sqlite";
+import { KEY_RE, mimeOfKey, newKey, openStore, sniffImage, type BlobStore } from "./blobs.ts";
+import type { RecordImage } from "./types.ts";
 import index from "../web/index.html";
 import {
   chatContext, draftsFromAnswer, EXECUTE_SYSTEM, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
@@ -25,6 +27,7 @@ import { widgetPayload } from "./widget.ts";
 
 export interface ServerOptions {
   db: Database;
+  blobs?: BlobStore;
   port?: number;
   publicBase?: string;
   /** ai-space's API and this app's token; every AI route answers 502 without them. */
@@ -61,6 +64,7 @@ class Live {
 
 export function createServer(opts: ServerOptions) {
   const { db } = opts;
+  const blobs = opts.blobs ?? openStore();
   const now = opts.now ?? (() => new Date());
   const spaceApiUrl = opts.spaceApiUrl ?? "";
   const spaceAppToken = opts.spaceAppToken ?? "";
@@ -217,6 +221,7 @@ export function createServer(opts: ServerOptions) {
   const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
 
   const server = Bun.serve({
+    maxRequestBodySize: 61 * 1024 * 1024,
     hostname: "127.0.0.1",
     port: opts.port ?? config.port,
     // A streamed answer can stay quiet during a long think; the keepalive keeps it under this.
@@ -285,11 +290,40 @@ export function createServer(opts: ServerOptions) {
         POST: async (req) => {
           const id = idOf(req.params.id);
           if (!id || !getTodo(db, id)) return fail("no such todo", 404);
-          const b = await body(req);
+          const staged: RecordImage[] = [];
+          let committed = false;
           try {
-            const record = appendRecord(db, id, b.content, source(b.source));
+            let content: unknown, src: Source;
+            if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
+              const form = await req.formData();
+              content = form.get("content") ?? "";
+              src = source(form.get("source"));
+              const files = form.getAll("images");
+              if (files.length > 6) return fail("at most 6 images per record");
+              if (typeof content !== "string" || content.length > 20_000) return fail("invalid record content");
+              const images = [];
+              for (const file of files) {
+                if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) return fail("each image must be between 1 byte and 10 MB", 413);
+                const mime = sniffImage(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
+                if (!mime) return fail("only PNG, JPEG, GIF and WebP images are supported", 415);
+                images.push({ file, mime });
+              }
+              for (const { file, mime } of images) {
+                const key = newKey(`records/${id}`, mime, Date.now());
+                staged.push({ key, name: file.name.slice(0, 255), mime, size: file.size });
+                await blobs.put(key, file, mime);
+              }
+              content = content.trim();
+            } else {
+              const b = await body(req);
+              content = b.content;
+              src = source(b.source);
+            }
+            const record = appendRecord(db, id, content, src, staged);
+            committed = !!record;
             return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
           } catch (e) { return fail((e as Error).message); }
+          finally { if (!committed) await Promise.allSettled(staged.map(image => blobs.remove(image.key))); }
         },
       },
       "/api/todos/:id/execute": { POST: (req) => { const id = idOf(req.params.id); return id ? execute(req, id) : fail("no such todo", 404); } },
@@ -338,6 +372,16 @@ export function createServer(opts: ServerOptions) {
     },
     fetch: async (req) => {
       const url = new URL(req.url);
+      if (req.method === "GET" && url.pathname.startsWith("/blobs/")) {
+        const key = url.pathname.slice(7);
+        if (!KEY_RE.test(key)) return fail("not found", 404);
+        const todoId = Number(key.split("/")[1]);
+        if (!getTodo(db, todoId)) return fail("not found", 404);
+        const linked = db.query("SELECT 1 FROM todo_records, json_each(todo_records.attachments) image WHERE todo_id = ? AND json_extract(image.value, '$.key') = ?").get(todoId, key);
+        if (!linked) return fail("not found", 404);
+        const stream = await blobs.stream(key);
+        return stream ? new Response(stream, { headers: { "content-type": mimeOfKey(key), "x-content-type-options": "nosniff", "cache-control": "private, max-age=3600" } }) : fail("not found", 404);
+      }
       if (url.pathname.startsWith("/space/chat/")) return proxyChat(req, url.pathname.slice("/space/chat/".length) + url.search);
       return new Response("not found", { status: 404 });
     },

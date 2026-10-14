@@ -3,7 +3,7 @@
  * so a todo can always answer "where from, when".
  */
 import { Database } from "bun:sqlite";
-import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord } from "./types.ts";
+import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord, type RecordImage } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS todos (
@@ -62,6 +62,8 @@ export function openDb(path: string): Database {
   const cols = db.query("PRAGMA table_info(todos)").all() as { name: string }[];
   if (!cols.some((c) => c.name === "parent_id")) db.exec("ALTER TABLE todos ADD COLUMN parent_id INTEGER");
   db.exec("CREATE INDEX IF NOT EXISTS todos_parent ON todos(parent_id)");
+  const recordCols = db.query("PRAGMA table_info(todo_records)").all() as { name: string }[];
+  if (!recordCols.some(c => c.name === "attachments")) db.exec("ALTER TABLE todo_records ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
   return db;
 }
 
@@ -228,18 +230,18 @@ export function listEvents(db: Database, todoId: number, limit = 100): TodoEvent
 
 const toRecord = (r: Row): OperationRecord => ({
   id: r.id as number, todoId: r.todo_id as number, content: r.content as string,
-  source: r.source as Source, createdAt: r.created_at as string,
+  source: r.source as Source, createdAt: r.created_at as string, attachments: JSON.parse(r.attachments as string),
 });
 
 /** One transaction per append: simultaneous writers never replace each other's entries. */
-export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual"): OperationRecord | null {
-  const text = cleanRecord(content);
+export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = []): OperationRecord | null {
+  const text = attachments.length && content === "" ? "" : cleanRecord(content);
   if (!SOURCES.includes(source)) throw new Error("invalid record source");
   return db.transaction(() => {
     if (!getTodo(db, todoId)) return null;
     const t = now();
-    const row = db.query("INSERT INTO todo_records (todo_id, content, source, created_at) VALUES (?, ?, ?, ?) RETURNING *")
-      .get(todoId, text, source, t) as Row;
+    const row = db.query("INSERT INTO todo_records (todo_id, content, source, created_at, attachments) VALUES (?, ?, ?, ?, ?) RETURNING *")
+      .get(todoId, text, source, t, JSON.stringify(attachments)) as Row;
     db.query("UPDATE todos SET updated_at = ? WHERE id = ?").run(t, todoId);
     addEvent(db, todoId, "record-added", { source, recordId: row.id }, t);
     return toRecord(row);

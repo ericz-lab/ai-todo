@@ -11,7 +11,7 @@ type Todo = { id: number; title: string; notes: string; status: Status; priority
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
-type OperationRecord = { id: number; todoId: number; content: string; source: string; createdAt: string };
+type OperationRecord = { attachments?: { key: string; name: string }[]; id: number; todoId: number; content: string; source: string; createdAt: string };
 type RecordPage = { records: OperationRecord[]; recordsNextBefore: number | null };
 type ChatMessage = { id: number; role: "user" | "assistant"; content: string; error?: string; live?: boolean };
 type ChatContext = { system?: string; text?: string; ack?: string; tools?: string[]; model?: string; thinking?: number };
@@ -34,7 +34,7 @@ const esc = (s: unknown): string => String(s ?? "").replace(/[&<>"]/g, (c) => ({
 /** Markdown through the space's renderer; plain paragraphs when the widget (and so ai-space) is not there. */
 const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? SpaceChat.renderMd(src) : String(src ?? "").split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join(""));
 const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-  const r = await fetch(path, { ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) } });
+  const r = await fetch(path, { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
   const body = (await r.json()) as T & { ok?: boolean; error?: string };
   if (!r.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body;
@@ -234,6 +234,7 @@ async function openDetail(id: number, execute = false) {
   renderEvents(r.events);
   renderRecords(r);
   d.recordContent.value = recordDrafts.get(id) ?? "";
+  renderRecordImages();
   els.detail.hidden = false; els.scrim.hidden = false;
   history.replaceState(null, "", `?todo=${id}`);
   const running = r.runs.find((x) => x.status === "running");
@@ -370,11 +371,42 @@ $("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || 
 
 // Drafts stay with their todo when the detail is closed or another task is opened.
 const recordDrafts = new Map<number, string>();
+const recordImages = new Map<number, { file: File; url: string }[]>();
+const imageInput = $<HTMLInputElement>("#d-record-images");
+const imagePreview = $("#d-record-preview");
+function renderRecordImages() {
+  imageInput.value = "";
+  imagePreview.innerHTML = (cur ? recordImages.get(cur.id) ?? [] : []).map((image, i) =>
+    `<div class="record-preview-item"><img src="${esc(image.url)}" alt="${esc(image.file.name)}"><button type="button" class="btn small" data-remove-image="${i}" aria-label="移除图片 ${esc(image.file.name)}">移除</button></div>`).join("");
+}
+function addRecordImages(files: File[]) {
+  if (!cur) return;
+  const images = recordImages.get(cur.id) ?? [];
+  if (images.length + files.length > 6) { toast("每条记录最多 6 张图片"); return; }
+  if (files.some(file => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) || !file.size || file.size > 10 * 1024 * 1024)) {
+    toast("请选择 PNG、JPEG、GIF 或 WebP 图片，每张不超过 10 MB"); return;
+  }
+  recordImages.set(cur.id, [...images, ...files.map(file => ({ file, url: URL.createObjectURL(file) }))]);
+  renderRecordImages();
+}
+imageInput.onchange = () => { addRecordImages(Array.from(imageInput.files ?? [])); imageInput.value = ""; };
+imagePreview.onclick = event => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove-image]");
+  if (!button || !cur) return;
+  const images = recordImages.get(cur.id) ?? [];
+  const removed = images.splice(Number(button.dataset.removeImage), 1)[0];
+  if (removed) URL.revokeObjectURL(removed.url);
+  renderRecordImages();
+};
+d.recordContent.addEventListener("paste", event => {
+  const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith("image/"));
+  if (files.length) { event.preventDefault(); addRecordImages(files); }
+});
 let recordCursor: number | null = null;
 function renderRecords(page: RecordPage, append = false) {
   const html = page.records.map((r) => `<article class="operation-record">
     <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span></div>
-    <div class="md">${renderMd(r.content)}</div></article>`).join("");
+    <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="/blobs/${esc(image.key)}" target="_blank" rel="noopener"><img src="/blobs/${esc(image.key)}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`).join("");
   if (append) d.records.insertAdjacentHTML("beforeend", html);
   else d.records.innerHTML = html || `<p class="record-hint">还没有操作记录</p>`;
   recordCursor = page.recordsNextBefore;
@@ -382,11 +414,19 @@ function renderRecords(page: RecordPage, append = false) {
 }
 d.recordContent.oninput = () => { if (cur) recordDrafts.set(cur.id, d.recordContent.value); };
 d.recordAdd.onclick = async () => {
-  if (!cur || d.recordAdd.disabled || !d.recordContent.value.trim()) return;
+  if (!cur || d.recordAdd.disabled || (!d.recordContent.value.trim() && !recordImages.get(cur.id)?.length)) return;
   const id = cur.id, content = d.recordContent.value;
+  const images = [...(recordImages.get(id) ?? [])];
   d.recordAdd.disabled = true;
   try {
-    await api(`/api/todos/${id}/records`, { method: "POST", body: JSON.stringify({ content, source: "manual" }) });
+    const form = new FormData();
+    form.set("content", content);
+    form.set("source", "manual");
+    for (const image of images) form.append("images", image.file);
+    await api(`/api/todos/${id}/records`, { method: "POST", body: form });
+    recordImages.set(id, (recordImages.get(id) ?? []).filter(image => !images.includes(image)));
+    for (const image of images) URL.revokeObjectURL(image.url);
+    if (cur?.id === id) renderRecordImages();
     if (recordDrafts.get(id) === content) recordDrafts.delete(id);
     if (cur?.id === id && d.recordContent.value === content) d.recordContent.value = "";
     toast("已追加记录");

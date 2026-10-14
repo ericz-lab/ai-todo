@@ -86,6 +86,9 @@
       <p class="record-hint">记录进展、操作和验证结果。每次追加独立保存，更正时请追加新记录。</p>
       <label class="sub" for="d-record-content">新的操作记录</label>
       <textarea id="d-record-content" class="d-notes" rows="3" maxlength="20000" placeholder="补充这次操作的内容，支持 Markdown…"></textarea>
+      <label class="record-hint" for="d-record-images">添加图片（最多 6 张，每张 10 MB，也可粘贴到输入框）</label>
+      <input id="d-record-images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
+      <div id="d-record-preview" class="record-images"></div>
       <button class="btn small" id="d-record-add">追加记录</button>
       <div id="d-records" aria-live="polite"></div>
       <button class="btn small" id="d-record-more" hidden>查看更早记录</button>

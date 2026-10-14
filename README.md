@@ -20,7 +20,7 @@ The `todo` skill ships with the app: ai-space links it into the workspace, so an
 
 ## Operation records
 
-Use the detail's **操作记录** section for progress, actions taken, verification evidence and remaining work. Each append stores its own timestamp and source (`manual`, `cli`, `chat`, or `ai`); it never replaces the editable notes or earlier records. Correct a record by appending a new entry. Records support Markdown, up to 20,000 characters each; empty and oversized entries are rejected. Completed tasks also accept records.
+Use the detail's **操作记录** section for progress, actions taken, verification evidence and remaining work. Each append stores its own timestamp and source (`manual`, `cli`, `chat`, or `ai`); it never replaces the editable notes or earlier records. Correct a record by appending a new entry. Records support Markdown, up to 20,000 characters each; empty entries without images and oversized entries are rejected. Choose or paste up to six PNG, JPEG, GIF or WebP images (10 MB each), preview/remove them before submission, and click saved thumbnails to open originals. Image-only records are supported. Completed tasks also accept records.
 
 The newest 50 entries appear first; **查看更早记录** loads older entries. Unsaved record drafts survive closing or switching tasks during the current page session. Audit history separately records each append. Upgrading creates the records table automatically and keeps existing notes and history unchanged; no text is automatically moved out of old notes. Records remain stored for audit when their todo is deleted, like events and AI runs, but deleted todos are not exposed by the records API.
 
@@ -32,6 +32,7 @@ bun src/cli.ts show 3                    # includes recent records
 ```
 
 - `POST /api/todos/:id/records` with `{ "content": "...", "source": "cli" }` appends one entry and returns `{ ok, record }`.
+- `POST /api/todos/:id/records` also accepts multipart fields `content`, `source`, and repeated `images` files. The returned record includes `attachments` (`key`, `name`, `mime`, `size`); images are served through `GET /blobs/<key>`. Failed appends clean up staged images.
 - `GET /api/todos/:id/records?before=<record-id>` returns `{ ok, records, recordsNextBefore }`, newest first, at most 50 entries.
 - `GET /api/todos/:id` includes the first page as `records` and `recordsNextBefore`.
 - Chat can append with `{ "op": "record", "id": 3, "content": "..." }`. Chat context includes excerpts of the latest three records per displayed todo; execution includes up to five recent records. Use the detail or CLI for the full history.
@@ -78,3 +79,5 @@ Deferred tasks retain dates, notes, records and execution history, but leave Tod
 Deferring a parent hides its active children from daily lists and AI plans without changing their stored statuses. Reopening the parent reveals those children again; independently deferred children stay deferred. A child can be deferred on its own. Completing a parent completes all unfinished children, including deferred ones, with individual history events.
 
 CLI: `bun src/cli.ts defer <id>`, `list --deferred`, and `reopen <id>`. API: `PATCH /api/todos/:id` with `{ "status": "deferred" }` or `{ "status": "open" }`; `GET /api/todos?status=deferred` lists explicitly deferred tasks. Chat supports `op: defer` and `op: reopen`; deferred tasks and children hidden by their parent are supplied separately from active tasks and excluded from daily plans by default. Existing databases accept the new text status without a schema migration.
+
+Image storage follows ai-notes and trade-journal: `BLOB_URL=s3://bucket/prefix/` uses Bun’s S3 client with `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT` and optional `S3_REGION`; `file:///absolute/path` uses a local directory. Without `BLOB_URL`, files go under `<SPACE_APP_DATA_DIR or data>/blobs`. The manifest requests `storage.blobs: s3` from Space. Only metadata is stored in SQLite; buckets stay private and the app streams images. Records and images are retained for audit after task deletion, but their URLs become unavailable. AI context currently includes record text only, not image contents.
