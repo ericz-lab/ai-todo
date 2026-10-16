@@ -47,6 +47,30 @@ provides:
     description: Add tasks, all or nothing. Body { drafts [{ title, notes?, due? (YYYY-MM-DD or YYYY-MM-DDTHH:MM), priority? (0-3), tags?, project? }], parentId?, source? (ai or manual) }; answers { ok, todos } with their ids.
     http: { method: POST, path: /api/todos/bulk }
     timeout: 30s
+  # The command box and Shortcuts panel of ai-space offer this (ai-space docs/shortcuts.md).
+  create:
+    description: Add one task from an action form. Body { title, dueDate? (YYYY-MM-DD), dueTime? (HH:MM), notes?, timezone (IANA), idempotencyKey? }; a repeated key answers the first task. Answers { ok, items [{ id, title, url, detail }] }.
+    http: { method: POST, path: /api/capabilities/create }
+    timeout: 30s
+    action:
+      title: Create todo
+      description: Add a task to the todo list, with an optional date and time.
+      keywords: [todo, task, remind]
+      template: todo
+      effect: write
+      idempotent: true
+      result: receipt
+      inputs:
+        - { name: title, type: text, label: Title, required: true, query: true }
+        - { name: dueDate, type: date, label: Date }
+        - { name: dueTime, type: time, label: Time }
+        - { name: notes, type: text, label: Notes }
+      i18n:
+        zh:
+          title: 新建待办
+          description: 往待办清单加一条任务,可带日期和时间。
+          keywords: [待办, 任务, 提醒我, 记一下]
+          inputs: { title: 标题, dueDate: 日期, dueTime: 时间, notes: 备注 }
 
 # The `todo` skill: ai-space links it into the workspace on every sync, so any agent session
 # started in the workspace can add, list and finish tasks through the CLI and the API.

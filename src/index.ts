@@ -80,6 +80,8 @@ export function createServer(opts: ServerOptions) {
   const body = async (req: Request): Promise<Record<string, unknown>> => {
     try { const v = await req.json(); return v && typeof v === "object" ? (v as Record<string, unknown>) : {}; } catch { return {}; }
   };
+  /** A created todo as an action receipt: its id, title, link and due date in the list's zone. */
+  const receipt = (t: Todo) => ({ id: t.id, title: t.title, ...(publicBase ? { url: `${publicBase}/?todo=${t.id}` } : {}), ...(t.due ? { detail: `${t.due.replace("T", " ")} (${defaultTz})` } : {}) });
   const idOf = (s: string): number | null => { const n = Number(s); return Number.isInteger(n) && n > 0 ? n : null; };
   /** A call through ai-space's bus (space.yaml `provides`) names the calling app; it goes into the todo's `created` event. */
   const caller = (req: Request): Record<string, unknown> => { const app = req.headers.get("x-space-caller")?.trim().slice(0, 100); return app ? { caller: app } : {}; };
@@ -255,6 +257,24 @@ export function createServer(opts: ServerOptions) {
           } catch (e) { return fail((e as Error).message); }
         },
       },
+      // The `create` action ai-space's command box and Shortcuts panel run (space.yaml `provides.create.action`).
+      // A repeated idempotencyKey answers the todo the first request created, so ai-space can retry a lost answer.
+      "/api/capabilities/create": {
+        POST: async (req) => {
+          const b = await body(req);
+          const key = typeof b.idempotencyKey === "string" && b.idempotencyKey.trim() ? b.idempotencyKey.trim().slice(0, 100) : undefined;
+          if (key) {
+            const seen = db.query("SELECT todo_id FROM todo_events WHERE kind = 'created' AND json_extract(data, '$.idempotencyKey') = ? LIMIT 1").get(key) as { todo_id: number } | null;
+            const todo = seen && getTodo(db, seen.todo_id);
+            if (todo) return json({ ok: true, items: [receipt(todo)], repeated: true });
+          }
+          try {
+            const due = actionDue(b.dueDate, b.dueTime, b.timezone, defaultTz);
+            const todo = createTodo(db, cleanDraft({ title: b.title, notes: b.notes, due }), "manual", { ...caller(req), ...(key ? { idempotencyKey: key } : {}) });
+            return json({ ok: true, items: [receipt(todo)] }, 201);
+          } catch (e) { return fail((e as Error).message); }
+        },
+      },
       "/api/todos/reorder": {
         POST: async (req) => {
           const b = await body(req);
@@ -406,4 +426,35 @@ if (import.meta.main) {
       setTimeout(() => process.exit(0), 8_000).unref();
     });
   }
+}
+
+/**
+ * An action's date and time (docs/time.md: a calendar date, a local time and the operator's zone) as this
+ * list's due, a wall clock in `listTz`. A bare date stays that date; a time in another zone is moved to
+ * the same instant here. A wall clock the zone skips (a clock change) is refused.
+ */
+export function actionDue(date: unknown, time: unknown, zone: unknown, listTz: string): string | null {
+  if (date === undefined || date === null || date === "") {
+    if (time) throw new Error("a time needs a date");
+    return null;
+  }
+  const d = String(date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error(`dueDate must be YYYY-MM-DD, got ${d}`);
+  if (time === undefined || time === null || time === "") return d;
+  const t = String(time);
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) throw new Error(`dueTime must be HH:MM, got ${t}`);
+  const tz = typeof zone === "string" && zone ? zone : listTz;
+  if (tz === listTz) return `${d}T${t}`;
+  const wall = (at: number, z: string) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: z, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  };
+  // The instant whose wall clock in `tz` is d T t: try the zone's offsets around that moment.
+  const naive = Date.parse(`${d}T${t}:00Z`);
+  for (const probe of [naive, naive - 86_400_000, naive + 86_400_000]) {
+    const offset = Date.parse(`${wall(probe, tz)}:00Z`) - probe;
+    const at = naive - offset;
+    if (wall(at, tz) === `${d}T${t}`) return wall(at, listTz);
+  }
+  throw new Error(`${d} ${t} does not exist in ${tz}`);
 }

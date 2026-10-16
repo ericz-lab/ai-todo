@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createTodo, updateTodo, openDb } from "./db.ts";
-import { createServer } from "./index.ts";
+import { actionDue, createServer } from "./index.ts";
 import type { Run, Todo } from "./types.ts";
 
 /** A stand-in for ai-space: the model service (parse answers JSON, execute streams) and the chat service. */
@@ -142,6 +142,29 @@ describe("service", () => {
     expect(results[1]!.todo).toMatchObject({ title: "写月报", source: "chat" });
     expect(((await j(`/api/todos/${todo.id}`)).body.todo as Todo).status).toBe("done");
     expect((await j("/api/ai/apply", { method: "POST", body: JSON.stringify({}) })).status).toBe(400);
+  });
+  test("the create action answers a receipt, and a repeated idempotency key answers the first todo", async () => {
+    const send = (b: Record<string, unknown>) => j("/api/capabilities/create", { method: "POST", headers: { "x-space-caller": "space" }, body: JSON.stringify(b) });
+    const first = await send({ title: "提交报告", dueDate: "2026-10-18", dueTime: "15:00", timezone: "Asia/Seoul", idempotencyKey: "k-1", now: "2026-10-16T23:30:00Z" });
+    expect(first.status).toBe(201);
+    const item = (first.body.items as { id: number; title: string; url: string; detail: string }[])[0]!;
+    // 15:00 in Seoul is 14:00 on the list's Shanghai wall clock.
+    expect(item).toEqual({ id: item.id, title: "提交报告", url: `https://todo.test/?todo=${item.id}`, detail: "2026-10-18 14:00 (Asia/Shanghai)" });
+    const again = await send({ title: "提交报告", dueDate: "2026-10-18", dueTime: "15:00", timezone: "Asia/Seoul", idempotencyKey: "k-1" });
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ repeated: true, items: [{ id: item.id }] });
+    const detail = (await j(`/api/todos/${item.id}`)).body as { events: { kind: string; data: Record<string, unknown> }[] };
+    expect(detail.events.find((e) => e.kind === "created")?.data).toEqual({ source: "manual", caller: "space", idempotencyKey: "k-1" });
+    expect((await send({ title: "" })).status).toBe(400);
+    expect((await send({ title: "x", dueTime: "09:00" })).body.error).toContain("needs a date");
+  });
+  test("an action's date stays a date; a time moves to the list's zone", () => {
+    expect(actionDue("2026-10-18", undefined, "Asia/Seoul", "Asia/Shanghai")).toBe("2026-10-18");
+    expect(actionDue("2026-10-18", "00:30", "Asia/Seoul", "Asia/Shanghai")).toBe("2026-10-17T23:30");
+    expect(actionDue("2026-10-18", "09:00", "Asia/Shanghai", "Asia/Shanghai")).toBe("2026-10-18T09:00");
+    expect(actionDue("2026-07-01", "09:30", "America/New_York", "Asia/Shanghai")).toBe("2026-07-01T21:30");
+    expect(() => actionDue("2026-03-08", "02:30", "America/New_York", "Asia/Shanghai")).toThrow(/does not exist/);
+    expect(actionDue(undefined, undefined, "UTC", "Asia/Shanghai")).toBeNull();
   });
   test("a todo added by another app through the bus records its caller", async () => {
     const r = await j("/api/todos/bulk", { method: "POST", headers: { "x-space-caller": "ai-spark" }, body: JSON.stringify({ drafts: [{ title: "from an idea" }], source: "ai" }) });
