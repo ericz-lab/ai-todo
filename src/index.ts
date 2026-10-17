@@ -93,6 +93,34 @@ export function createServer(opts: ServerOptions) {
     projects: projectCounts(db, status === "deferred" ? "deferred" : "active"),
   });
 
+  /** A record from a multipart form (`content`, `source`, up to six `images`): the images go to the blob store first and are removed again when the record is not written. */
+  const saveRecord = async (id: number, form: FormData): Promise<Response> => {
+    const staged: RecordImage[] = [];
+    let committed = false;
+    try {
+      const raw = form.get("content") ?? "";
+      const files = form.getAll("images");
+      if (files.length > 6) return fail("at most 6 images per record");
+      if (typeof raw !== "string" || raw.length > 20_000) return fail("invalid record content");
+      const images = [];
+      for (const file of files) {
+        if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) return fail("each image must be between 1 byte and 10 MB", 413);
+        const mime = sniffImage(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
+        if (!mime) return fail("only PNG, JPEG, GIF and WebP images are supported", 415);
+        images.push({ file, mime });
+      }
+      for (const { file, mime } of images) {
+        const key = newKey(`records/${id}`, mime, Date.now());
+        staged.push({ key, name: file.name.slice(0, 255), mime, size: file.size });
+        await blobs.put(key, file, mime);
+      }
+      const record = appendRecord(db, id, raw.trim(), source(form.get("source")), staged);
+      committed = !!record;
+      return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
+    } catch (e) { return fail((e as Error).message); }
+    finally { if (!committed) await Promise.allSettled(staged.map(image => blobs.remove(image.key))); }
+  };
+
   const recordPage = (id: number, before?: number) => {
     const rows = listRecords(db, id, 51, before);
     const records = rows.slice(0, 50);
@@ -275,6 +303,17 @@ export function createServer(opts: ServerOptions) {
           } catch (e) { return fail((e as Error).message); }
         },
       },
+      // `record` for other apps (space.yaml `provides.record`): a record with images on a task, by id in the body,
+      // since a bus call has no path. Multipart { todoId, content?, source?, images[] }; same limits as the page's.
+      "/api/capabilities/record": {
+        POST: async (req) => {
+          const form = await req.formData().catch(() => null);
+          if (!form) return fail("a multipart body with todoId is required");
+          const id = idOf(String(form.get("todoId") ?? ""));
+          if (!id || !getTodo(db, id)) return fail("no such todo", 404);
+          return saveRecord(id, form);
+        },
+      },
       "/api/todos/reorder": {
         POST: async (req) => {
           const b = await body(req);
@@ -310,40 +349,16 @@ export function createServer(opts: ServerOptions) {
         POST: async (req) => {
           const id = idOf(req.params.id);
           if (!id || !getTodo(db, id)) return fail("no such todo", 404);
-          const staged: RecordImage[] = [];
-          let committed = false;
+          if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
+            const form = await req.formData().catch(() => null);
+            if (!form) return fail("invalid multipart body");
+            return saveRecord(id, form);
+          }
           try {
-            let content: unknown, src: Source;
-            if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
-              const form = await req.formData();
-              content = form.get("content") ?? "";
-              src = source(form.get("source"));
-              const files = form.getAll("images");
-              if (files.length > 6) return fail("at most 6 images per record");
-              if (typeof content !== "string" || content.length > 20_000) return fail("invalid record content");
-              const images = [];
-              for (const file of files) {
-                if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) return fail("each image must be between 1 byte and 10 MB", 413);
-                const mime = sniffImage(new Uint8Array(await file.slice(0, 16).arrayBuffer()));
-                if (!mime) return fail("only PNG, JPEG, GIF and WebP images are supported", 415);
-                images.push({ file, mime });
-              }
-              for (const { file, mime } of images) {
-                const key = newKey(`records/${id}`, mime, Date.now());
-                staged.push({ key, name: file.name.slice(0, 255), mime, size: file.size });
-                await blobs.put(key, file, mime);
-              }
-              content = content.trim();
-            } else {
-              const b = await body(req);
-              content = b.content;
-              src = source(b.source);
-            }
-            const record = appendRecord(db, id, content, src, staged);
-            committed = !!record;
+            const b = await body(req);
+            const record = appendRecord(db, id, b.content, source(b.source));
             return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
           } catch (e) { return fail((e as Error).message); }
-          finally { if (!committed) await Promise.allSettled(staged.map(image => blobs.remove(image.key))); }
         },
       },
       "/api/todos/:id/execute": { POST: (req) => { const id = idOf(req.params.id); return id ? execute(req, id) : fail("no such todo", 404); } },

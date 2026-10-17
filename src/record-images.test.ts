@@ -96,3 +96,23 @@ test("existing operation records acquire an empty attachment list and survive re
     db.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("another app attaches a picture to a task through the record capability, by id in the body", async () => {
+  const f = fixture();
+  try {
+    const data = form(1, png, "来自灵光一闪 #20 的截图");
+    data.set("todoId", String(f.todo.id));
+    data.set("source", "ai");
+    const response = await fetch(`${f.base}/api/capabilities/record`, { method: "POST", body: data });
+    expect(response.status).toBe(201);
+    const { record } = await response.json();
+    expect(record).toMatchObject({ todoId: f.todo.id, content: "来自灵光一闪 #20 的截图", source: "ai" });
+    expect(record.attachments).toHaveLength(1);
+    expect(Buffer.from(await (await fetch(`${f.base}/blobs/${record.attachments[0].key}`)).arrayBuffer())).toEqual(png);
+    const missing = form(1);
+    missing.set("todoId", "9999");
+    expect((await fetch(`${f.base}/api/capabilities/record`, { method: "POST", body: missing })).status).toBe(404);
+    expect((await fetch(`${f.base}/api/capabilities/record`, { method: "POST", body: form(1) })).status).toBe(404);
+    expect(listRecords(f.db, f.todo.id)).toHaveLength(1);
+  } finally { f.close(); }
+});
