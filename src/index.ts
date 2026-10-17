@@ -314,6 +314,36 @@ export function createServer(opts: ServerOptions) {
           return saveRecord(id, form);
         },
       },
+      // `capture-image` (space.yaml `provides`): ai-space hands over a screenshot the operator chose to keep as a
+      // task. Multipart { file (PNG or JPEG), text?, via?, id? }: the first line of the text is the title
+      // ("截图" without one), the rest the notes, and the picture the task's first record. A repeated id
+      // answers the task the first call made.
+      "/api/capabilities/capture-image": {
+        POST: async (req) => {
+          const form = await req.formData().catch(() => null);
+          const file = form?.get("file");
+          if (!form || !(file instanceof File)) return fail("a multipart body with a file is required");
+          const rawId = form.get("id");
+          const key = typeof rawId === "string" && rawId.trim() ? `capture:${rawId.trim().slice(0, 100)}` : undefined;
+          const answer = (t: Todo, status = 201) => json({ ok: true, todo: t, ...(publicBase ? { url: `${publicBase}/?todo=${t.id}` } : {}), label: `${lang === "zh" ? "待办" : "Todo"} #${t.id}` }, status);
+          if (key) {
+            const seen = db.query("SELECT todo_id FROM todo_events WHERE kind = 'created' AND json_extract(data, '$.idempotencyKey') = ? LIMIT 1").get(key) as { todo_id: number } | null;
+            const todo = seen && getTodo(db, seen.todo_id);
+            if (todo) return answer(todo, 200);
+          }
+          const text = String(form.get("text") ?? "").replace(/\r\n?/g, "\n").trim();
+          const [first = "", ...rest] = text.split("\n");
+          let todo: Todo;
+          try {
+            todo = createTodo(db, cleanDraft({ title: first.trim().slice(0, 200) || (lang === "zh" ? "截图" : "Screenshot"), notes: rest.join("\n").trim() || undefined }), "manual", { ...caller(req), via: String(form.get("via") ?? "").slice(0, 40) || undefined, ...(key ? { idempotencyKey: key } : {}) });
+          } catch (e) { return fail((e as Error).message); }
+          const record = new FormData();
+          record.append("images", file);
+          const saved = await saveRecord(todo.id, record);
+          if (!saved.ok) { deleteTodo(db, todo.id); return saved; }
+          return answer(getTodo(db, todo.id) ?? todo);
+        },
+      },
       "/api/todos/reorder": {
         POST: async (req) => {
           const b = await body(req);

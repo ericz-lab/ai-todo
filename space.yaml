@@ -51,6 +51,17 @@ provides:
     description: Add a record to a task, with pictures. Multipart { todoId, content? (text, may be empty when there are images), source? (manual, ai, chat or cli), images (0-6 PNG, JPEG, GIF or WebP files) }; answers { ok, record } with its attachments. The whole call is capped at 4 MiB by the bus.
     http: { method: POST, path: /api/capabilities/record }
     timeout: 30s
+  # A screenshot from the phone, kept as a task (ai-space docs/events.md#capture).
+  capture-image:
+    description: Keep a picture as a new task. Multipart { file (PNG or JPEG), text? (first line is the title, the rest the notes; 截图 without it), via?, id? (a repeated id answers the first task) }; answers { ok, todo, url, label }. The picture is the task's first record.
+    http: { method: POST, path: /api/capabilities/capture-image }
+    timeout: 30s
+    callers: [space]
+    capture:
+      kinds: [image]
+      title: Todo
+      i18n:
+        zh: { title: 待办 }
   # The command box and Shortcuts panel of ai-space offer this (ai-space docs/shortcuts.md).
   create:
     description: Add one task from an action form. Body { title, dueDate? (YYYY-MM-DD), dueTime? (HH:MM), notes?, timezone (IANA), idempotencyKey? }; a repeated key answers the first task. Answers { ok, items [{ id, title, url, detail }] }.

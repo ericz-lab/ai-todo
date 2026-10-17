@@ -116,3 +116,49 @@ test("another app attaches a picture to a task through the record capability, by
     expect(listRecords(f.db, f.todo.id)).toHaveLength(1);
   } finally { f.close(); }
 });
+
+test("capture-image makes a task with the screenshot as its first record, once per id", async () => {
+  const f = fixture();
+  try {
+    const capture = (text: string, bytes: BlobPart = png) => {
+      const data = new FormData();
+      data.set("id", "3f1c0a52-0000-4000-8000-000000000001");
+      data.set("via", "screenshot");
+      if (text) data.set("text", text);
+      data.set("file", new File([bytes], "screenshot.png", { type: "image/png" }));
+      return fetch(`${f.base}/api/capabilities/capture-image`, { method: "POST", body: data });
+    };
+    const first = await capture("Fix the login page\r\nThe button is cut off");
+    expect(first.status).toBe(201);
+    const made = await first.json();
+    expect(made.todo.title).toBe("Fix the login page");
+    expect(made.todo.notes).toBe("The button is cut off");
+    expect(made.label).toBe(`待办 #${made.todo.id}`);
+    const records = listRecords(f.db, made.todo.id);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.attachments).toHaveLength(1);
+    const image = await fetch(`${f.base}/blobs/${records[0]!.attachments![0]!.key}`);
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(png);
+
+    const again = await capture("Fix the login page");
+    expect(again.status).toBe(200);
+    expect((await again.json()).todo.id).toBe(made.todo.id);
+  } finally { f.close(); }
+});
+
+test("capture-image without words is titled 截图, and a fake picture leaves no task", async () => {
+  const f = fixture();
+  try {
+    const send = (bytes: BlobPart, id: string) => {
+      const data = new FormData();
+      data.set("id", id);
+      data.set("file", new File([bytes], "screenshot.png", { type: "image/png" }));
+      return fetch(`${f.base}/api/capabilities/capture-image`, { method: "POST", body: data });
+    };
+    const ok = await (await send(png, "a")).json();
+    expect(ok.todo.title).toBe("截图");
+    const before = f.db.query("SELECT count(*) AS n FROM todos").get() as { n: number };
+    expect((await send("<svg/>", "b")).status).toBe(415);
+    expect(f.db.query("SELECT count(*) AS n FROM todos").get()).toEqual({ n: before.n });
+  } finally { f.close(); }
+});
