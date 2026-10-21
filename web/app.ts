@@ -82,8 +82,23 @@ const fmtAgo = (iso: string) => {
 const applyTheme = (t: string) => {
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem("todo-theme", t); } catch { /* private mode */ }
-  $("#theme").textContent = t === "dark" ? "☀️" : "🌙";
+  $("#theme-label").textContent = t === "dark" ? "浅色模式" : "深色模式";
+  $("#theme").querySelector("svg")!.innerHTML = t === "dark" ? ICON.sun : ICON.moon;
 };
+/** Stroke icons (24px box) drawn by the page; the static ones live in index.html. */
+const ICON = {
+  moon: `<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>`,
+  sun: `<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>`,
+  folder: `<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/>`,
+  hash: `<path d="M9 4 7.5 20M16.5 4 15 20M4.5 9h16M3.5 15h16"/>`,
+  alert: `<path d="M12 4 21 19.5H3Z"/><path d="M12 10v4M12 17v.01"/>`,
+  check: `<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>`,
+  x: `<path d="M6 6l12 12M18 6 6 18"/>`,
+  search: `<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>`,
+  spark: `<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9Z"/>`,
+  chart: `<path d="M4 4v16h16"/><path d="m7.5 14 3.5-4 3 3 5-6"/>`,
+};
+const svg = (name: keyof typeof ICON) => `<svg class="ic" viewBox="0 0 24 24">${ICON[name]}</svg>`;
 let savedTheme: string | null = null;
 try { savedTheme = localStorage.getItem("todo-theme"); } catch { /* private mode */ }
 applyTheme(savedTheme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
@@ -91,64 +106,149 @@ $("#theme").onclick = () => applyTheme(document.documentElement.dataset.theme ==
 
 // ---- state
 type View = "today" | "upcoming" | "all" | "done" | "deferred";
+const VIEW_TITLE: Record<View, string> = { all: "全部", today: "今天", upcoming: "即将", deferred: "暂不处理", done: "已完成" };
 let view: View = "all";
 let filterTag: string | null = null;
 let filterProject: string | null = null;
+let query = "";
 let todos: Todo[] = [];
 let active: Todo[] = [];
 let tags: { tag: string; n: number }[] = [];
 let projects: { project: string; n: number }[] = [];
+/** Completions per day over the last week, from the panel card's trend (`/api/widget`); null when it could not be read. */
+let trend: { t: string; v: number | null }[] | null = null;
 const els = { list: $("#list"), side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail") };
+$("#tz").textContent = TZ;
 
 async function load() {
   const status = view === "done" ? "done" : view === "deferred" ? "deferred" : "active";
   const q = new URLSearchParams({ status });
   if (filterTag) q.set("tag", filterTag);
   if (filterProject) q.set("project", filterProject);
+  const widget = api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget")
+    .then((w) => w.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null);
   const r = await api<{ todos: Todo[]; tags: typeof tags; projects: typeof projects }>(`/api/todos?${q}`);
   todos = r.todos; tags = r.tags; projects = r.projects;
-  if (status === "active") active = todos;
+  if (status === "active" && !filterTag && !filterProject) active = todos;
   else { const a = await api<{ todos: Todo[] }>(`/api/todos?status=active`); active = a.todos; }
+  trend = await widget;
   renderSide();
+  renderHead();
+  renderKpis();
+  renderTrend();
   renderList();
 }
 
 // ---- sidebar
+const isToday = (t: Todo) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
 function renderSide() {
   const today = todayStr();
-  const isToday = (t: Todo) => t.status === "doing" || (!!t.due && dayOf(t.due) <= today);
+  const late = active.filter(isLate).length;
   const counts = { today: active.filter(isToday).length, upcoming: active.filter((t) => t.due && dayOf(t.due) > today).length, all: active.length };
   $("#n-today").textContent = counts.today ? String(counts.today) : "";
+  $("#n-today").classList.toggle("alert", late > 0);
+  $("#n-today").title = late ? `${late} 项已过期` : "";
   $("#n-upcoming").textContent = counts.upcoming ? String(counts.upcoming) : "";
   $("#n-all").textContent = counts.all ? String(counts.all) : "";
   $("#n-deferred").textContent = view === "deferred" ? String(todos.length) : "";
   $("#n-done").textContent = view === "done" ? String(todos.length) : "";
-  document.querySelectorAll<HTMLElement>(".view").forEach((b) => b.classList.toggle("on", b.dataset.view === view));
-  const chips = (list: { key: string; n: number }[], on: string | null, pick: (k: string | null) => void) => {
-    if (!list.length) return `<span class="none">无</span>`;
-    return list.map((x) => `<button class="chip${on === x.key ? " on" : ""}" data-key="${esc(x.key)}">${esc(x.key)}<b>${x.n}</b></button>`).join("");
-  };
-  $("#projects").innerHTML = chips(projects.map((p) => ({ key: p.project, n: p.n })), filterProject, () => {});
-  $("#tags").innerHTML = chips(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag, () => {});
+  document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view && !filterProject && !filterTag));
+  const items = (list: { key: string; n: number }[], on: string | null, icon: keyof typeof ICON, label: (k: string) => string) =>
+    list.length ? list.map((x) => `<button class="view${on === x.key ? " on" : ""}" data-key="${esc(x.key)}">${svg(icon)}<span>${esc(label(x.key))}</span><b>${x.n}</b></button>`).join("") : `<span class="none">无</span>`;
+  $("#projects").innerHTML = items(projects.map((p) => ({ key: p.project, n: p.n })), filterProject, "folder", (k) => k);
+  $("#tags").innerHTML = items(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag, "hash", (k) => k);
   $("#project-list").innerHTML = projects.map((p) => `<option value="${esc(p.project)}">`).join("");
-  const late = active.filter(isLate).length;
-  $("#stats").innerHTML = `${active.length} 项待办${late ? `，<span style="color:var(--danger)">${late} 项已过期</span>` : ""}<br><span style="color:var(--faint)">${TZ}</span>`;
-  $("#projects").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; void load(); }; });
-  $("#tags").querySelectorAll<HTMLElement>(".chip").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; void load(); }; });
+  $("#projects").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
+  $("#tags").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
 }
-document.querySelectorAll<HTMLElement>(".view").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; closeDrawers(); void load(); }; });
+document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; closeDrawers(); void load(); }; });
+
+// ---- header and toolbar
+const longDay = (d = new Date()) => `${d.getMonth() + 1}月${d.getDate()}日 周${"日一二三四五六"[d.getDay()]}`;
+function renderHead() {
+  const shown = visible().length;
+  $("#view-title").textContent = VIEW_TITLE[view];
+  $("#view-sub").textContent = `${longDay()} · ${shown} 项${view === "done" ? "已完成" : view === "deferred" ? "暂缓" : "待办"}`;
+  $("#today-chip").textContent = longDay();
+  document.title = `${VIEW_TITLE[view]} · AI 待办`;
+  const f: string[] = [];
+  if (filterProject) f.push(`<button class="filter" data-clear="project">${svg("folder")}<i>项目</i>${esc(filterProject)}${svg("x")}</button>`);
+  if (filterTag) f.push(`<button class="filter" data-clear="tag">${svg("hash")}<i>标签</i>${esc(filterTag)}${svg("x")}</button>`);
+  if (query) f.push(`<button class="filter" data-clear="query">${svg("search")}<i>搜索</i>${esc(query)}${svg("x")}</button>`);
+  $("#filters").innerHTML = f.join("");
+  $("#filters").querySelectorAll<HTMLElement>("[data-clear]").forEach((b) => {
+    b.onclick = () => {
+      const k = b.dataset.clear;
+      if (k === "project") filterProject = null; else if (k === "tag") filterTag = null; else { query = ""; searchBox.value = ""; renderHead(); renderList(); return; }
+      void load();
+    };
+  });
+  const late = active.filter(isLate).length;
+  $("#toolbar-note").textContent = late ? `${late} 项已过期` : `${active.length} 项未完成`;
+}
+
+// ---- search: the listed todos by title, notes, project and tags, in the page
+const searchBox = $<HTMLInputElement>("#search");
+const matches = (t: Todo) => !query || [t.title, t.notes, t.project ?? "", ...t.tags].some((s) => s.toLowerCase().includes(query.toLowerCase()));
+const visible = () => todos.filter(matches);
+searchBox.oninput = () => { query = searchBox.value.trim(); renderHead(); renderList(); };
+searchBox.onkeydown = (e) => { if (e.key === "Escape") { searchBox.value = ""; query = ""; renderHead(); renderList(); searchBox.blur(); } };
+document.addEventListener("keydown", (e) => {
+  const tag = (document.activeElement as HTMLElement | null)?.tagName;
+  if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && els.detail.hidden && !(document.activeElement as HTMLElement | null)?.isContentEditable) { e.preventDefault(); searchBox.focus(); searchBox.select(); }
+});
+
+// ---- the three stat cards
+function renderKpis() {
+  const today = todayStr();
+  const todayN = active.filter(isToday);
+  const dueToday = active.filter((t) => t.due && dayOf(t.due) === today).length;
+  const doing = active.filter((t) => t.status === "doing").length;
+  const late = active.filter(isLate).sort((a, b) => a.due!.localeCompare(b.due!));
+  const done = trend ? trend.reduce((s, p) => s + (p.v ?? 0), 0) : null;
+  const doneToday = trend?.at(-1)?.v ?? 0;
+  const card = (tile: string, icon: keyof typeof ICON, label: string, value: string, unit: string, left: string, right: string) => `
+    <div class="kpi"><div class="kpi-head"><span class="tile ${tile}">${svg(icon)}</span>${label}</div>
+      <div class="kpi-value">${value}<small>${unit}</small></div>
+      <div class="kpi-foot"><span>${left}</span><span>${right}</span></div></div>`;
+  $("#kpis").innerHTML =
+    card("", "sun", "今天", String(todayN.length), "项", `今天到期 ${dueToday}`, doing ? `进行中 ${doing}` : "没有进行中") +
+    card(late.length ? "late" : "", "alert", "已过期", String(late.length), "项",
+      late.length ? `<span class="late">最早：${esc(late[0]!.title)}</span>` : "没有逾期任务", late.length ? esc(fmtDue(late[0]!.due!)) : "") +
+    card("ok", "check", "近 7 天完成", done === null ? "–" : String(done), "项",
+      done === null ? "完成记录读取失败" : `今天完成 <span class="ok">${doneToday}</span>`, done ? `日均 ${(done / 7).toFixed(1)}` : "");
+}
+
+// ---- the week chart in the rail: completions per day, one bar each, the count on top
+function renderTrend() {
+  const head = `<div class="card-head"><span class="tile ai">${svg("chart")}</span><div class="card-title"><b>这一周的节奏</b><span>每天完成的任务数</span></div></div>`;
+  if (!trend) { $("#trend").innerHTML = `${head}<p class="trend-text sub">没能读到完成记录。</p>`; return; }
+  const total = trend.reduce((s, p) => s + (p.v ?? 0), 0);
+  const max = Math.max(1, ...trend.map((p) => p.v ?? 0));
+  const best = trend.reduce((a, p) => ((p.v ?? 0) > (a.v ?? 0) ? p : a), trend[0]!);
+  const md = (t: string) => `${Number(t.slice(5, 7))}/${Number(t.slice(8, 10))}`;
+  const text = !total ? "这 7 天还没有完成的任务。挑一件小的先做掉。"
+    : `这 7 天完成了 <b>${total}</b> 项，${best.t === trend.at(-1)!.t ? "今天" : md(best.t)} 最多，${best.v} 项。${active.filter(isLate).length ? `还有 ${active.filter(isLate).length} 项过期没处理。` : ""}`;
+  $("#trend").innerHTML = `${head}<p class="trend-text">${text}</p>
+    <div class="chart" role="img" aria-label="近 7 天每天完成数：${trend.map((p) => `${md(p.t)} ${p.v ?? 0} 项`).join("，")}">
+      <div class="chart-head"><span>完成数，项</span><span>近 7 天</span></div>
+      <div class="bars">${trend.map((p) => `<div class="bar${p.v ? "" : " zero"}" title="${md(p.t)}：完成 ${p.v ?? 0} 项"><em>${p.v ?? 0}</em><i style="height:${((p.v ?? 0) / max) * 78}%"></i></div>`).join("")}</div>
+      <div class="bar-days">${trend.map((p, i) => `<span${i === trend!.length - 1 ? ` class="today"` : ""}>${i === trend!.length - 1 ? "今天" : md(p.t)}</span>`).join("")}</div>
+    </div>`;
+}
 
 // ---- the list
 type Group = { key: string; title: string; late?: boolean; items: Todo[] };
 /** Subtasks by parent id, among the todos listed; a subtask whose parent is listed is drawn under it, not on its own. */
 let kids = new Map<number, Todo[]>();
 function nest() {
-  const ids = new Set(todos.map((t) => t.id));
+  const shown = visible();
+  const ids = new Set(shown.map((t) => t.id));
   kids = new Map();
-  for (const t of todos) if (t.parentId && ids.has(t.parentId)) kids.set(t.parentId, [...(kids.get(t.parentId) ?? []), t]);
-  return todos.filter((t) => !t.parentId || !ids.has(t.parentId));
+  for (const t of shown) if (t.parentId && ids.has(t.parentId)) kids.set(t.parentId, [...(kids.get(t.parentId) ?? []), t]);
+  return shown.filter((t) => !t.parentId || !ids.has(t.parentId));
 }
-/** A todo's title by id, from whatever the page has; for the "↳ parent" badge. */
+/** A todo's title by id, from whatever the page has; for the "↳ parent" line. */
 const titleOf = (id: number) => (todos.find((t) => t.id === id) ?? active.find((t) => t.id === id))?.title;
 function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
@@ -170,38 +270,49 @@ function groups(): Group[] {
 function renderList() {
   const gs = groups();
   if (!gs.length) {
-    const hint = view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
-    els.list.innerHTML = `<div class="empty glass"><b>${view === "done" ? "空" : "轻松"}</b>${hint}</div>`;
+    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
+    els.list.innerHTML = `<div class="empty"><b>${query ? "没有结果" : view === "done" ? "空" : "轻松"}</b>${hint}</div>`;
     return;
   }
-  els.list.innerHTML = gs.map((g) => `
-    <section class="group glass">
-      <div class="group-head${g.late ? " late" : ""}"><h3>${g.title}</h3><b>${g.items.length}</b></div>
+  const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(t.id)?.length ?? 0), 0), 0);
+  const foot = view === "done" || view === "deferred" ? `<div class="list-foot"><b>共 ${total} 项</b></div>`
+    : `<div class="list-foot"><span class="legend" style="--c:var(--danger)">已过期，先处理或改日期</span><span class="legend" style="--c:var(--bar)">今天到期</span><b>共 ${total} 项</b></div>`;
+  els.list.innerHTML = gs.map((g, i) => `
+    <section class="group">
+      <div class="cols${g.late ? " late" : ""}"><div class="gname">${g.title}<b>${g.items.length}</b></div><span>截止</span><span>优先级</span><span class="c-proj-h">项目</span><span></span></div>
+      <div class="group-name${g.late ? " late" : ""}">${g.title}<b>${g.items.length}</b></div>
       ${g.items.map((t) => rowHtml(t) + (kids.get(t.id) ?? []).map((k) => rowHtml(k, true)).join("")).join("")}
+      ${i === gs.length - 1 ? foot : ""}
     </section>`).join("");
   els.list.querySelectorAll<HTMLElement>(".todo").forEach((row) => {
     const id = Number(row.dataset.id);
     row.onclick = (e) => { if ((e.target as HTMLElement).closest("button, label, input")) return; void openDetail(id); };
+    row.onkeydown = (e) => { if (e.key === "Enter" && e.target === row) void openDetail(id); };
     $<HTMLInputElement>("input[type=checkbox]", row).onchange = (e) => void setStatus(id, (e.target as HTMLInputElement).checked ? "done" : "open");
     row.querySelector<HTMLElement>("[data-op=run]")!.onclick = () => void openDetail(id, true);
     row.querySelector<HTMLElement>("[data-op=edit]")!.onclick = () => void openDetail(id);
   });
 }
 function rowHtml(t: Todo, nested = false): string {
-  const meta: string[] = [];
-  if (t.subtasks.total) meta.push(`<span class="badge prog${t.subtasks.done === t.subtasks.total ? " full" : ""}" title="子任务完成 ${t.subtasks.done} / ${t.subtasks.total}">☑ ${t.subtasks.done}/${t.subtasks.total}</span>`);
-  if (t.parentId && !nested) meta.push(`<span class="badge parent" title="子任务，属于 #${t.parentId}">↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}</span>`);
-  if (t.due) meta.push(`<span class="badge due${isLate(t) && t.status !== "done" && t.status !== "deferred" ? " late" : dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`);
-  if (t.project) meta.push(`<span class="badge proj">${esc(t.project)}</span>`);
-  for (const tag of t.tags) meta.push(`<span class="badge">#${esc(tag)}</span>`);
-  if (t.notes) meta.push(`<span title="${esc(t.notes.slice(0, 500))}">≡</span>`);
-  if (t.status === "deferred") meta.push(`<span class="badge">暂不处理</span>`);
-  if (t.status === "done" && t.doneAt) meta.push(`<span>完成于 ${esc(fmtAgo(t.doneAt))}</span>`);
+  const line: string[] = [];
+  const open = t.status !== "done" && t.status !== "deferred";
+  if (t.status === "doing") line.push(`<span style="color:var(--ai)">进行中</span>`);
+  if (t.subtasks.total) line.push(`子任务 ${t.subtasks.done}/${t.subtasks.total}`);
+  if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}`);
+  if (t.tags.length) line.push(t.tags.map((tag) => `#${esc(tag)}`).join(" "));
+  if (t.status === "done" && t.doneAt) line.push(`完成于 ${esc(fmtAgo(t.doneAt))}`);
+  if (t.notes) line.push(esc(t.notes.replace(/\s+/g, " ").slice(0, 80)));
+  const late = !!t.due && isLate(t) && open;
+  const due = !t.due ? `<span class="dash">—</span>`
+    : `<span class="pill${late ? " late" : open && dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`;
+  const pri = t.priority ? `<span class="pri p${t.priority}"><span>${PRI[t.priority]}</span></span>` : `<span class="dash">—</span>`;
   return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}" tabindex="0">
-    <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""}><span></span></label>
-    <div class="t">${t.priority ? `<i class="pri p${t.priority}" title="优先级 ${PRI[t.priority]}"></i>` : ""}<span class="title">${esc(t.title)}</span></div>
+    <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""} aria-label="完成 ${esc(t.title)}"><span></span></label>
+    <div class="t"><span class="title">${esc(t.title)}</span><span class="line">${line.join(" · ")}</span></div>
+    <div class="c-due">${due}</div>
+    <div class="c-pri">${pri}</div>
+    <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
     <div class="ops"><button class="btn" data-op="run" title="交给 AI 执行"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button></div>
-    <div class="meta">${meta.join("")}</div>
   </div>`;
 }
 async function setStatus(id: number, status: Status) {
