@@ -1,9 +1,9 @@
-/* A quiet workspace: one window card on a warm gray page, white panels, light gray rows,
+/* A quiet workspace: the page edge to edge, white panels, light gray rows,
    hairline borders and almost no shadow. Blue marks the AI, orange marks what is due, red what
    is late; ink (near black) is the primary action. Light and dark share every rule; only the
    tokens change. The --glass* names stay because the chat widget and the draft cards read them. */
 :root {
-  --page: #e6e5e2; --bg: #f7f7f5; --surface: #ffffff; --surface-2: #f4f3f1; --hover: #efeeeb;
+  --bg: #f7f7f5; --surface: #ffffff; --surface-2: #f4f3f1; --hover: #efeeeb;
   --border: #e7e6e3; --hairline: #ecebe8;
   --text: #1b1b1a; --muted: #6f6e6a; --faint: #a3a29e;
   --ink: #171716; --on-ink: #ffffff; --ink-soft: rgba(23,23,22,.07); --ink-softer: rgba(23,23,22,.04);
@@ -13,10 +13,9 @@
   --p1: #2f6bdc; --p2: #d9822f; --p3: #cf3a3a;
   --glass: var(--surface); --glass-strong: var(--surface); --glass-hover: var(--hover); --glass-border: var(--border);
   --shadow: 0 1px 2px rgba(20,20,18,.05);
-  --window-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 20px 50px rgba(20,20,18,.08);
 }
 :root[data-theme="dark"] {
-  --page: #0b0b0b; --bg: #141414; --surface: #1b1b1b; --surface-2: #222221; --hover: #2a2a29;
+  --bg: #141414; --surface: #1b1b1b; --surface-2: #222221; --hover: #2a2a29;
   --border: #2d2d2b; --hairline: #282826;
   --text: #ededea; --muted: #a09f9a; --faint: #6a6965;
   --ink: #ededea; --on-ink: #141414; --ink-soft: rgba(237,237,234,.1); --ink-softer: rgba(237,237,234,.05);
@@ -25,12 +24,11 @@
   --danger: #ff6b6b; --danger-soft: rgba(255,107,107,.14); --ok: #4cc583; --ok-soft: rgba(76,197,131,.14);
   --p1: #6b9bff; --p2: #e8a46b; --p3: #ff6b6b;
   --shadow: 0 1px 2px rgba(0,0,0,.3);
-  --window-shadow: 0 20px 50px rgba(0,0,0,.5);
 }
 * { box-sizing: border-box; margin: 0; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
-body { background: var(--page); color: var(--text); overflow: hidden;
+body { background: var(--bg); color: var(--text); overflow: hidden;
   font: 400 14.5px/1.5 Inter, -apple-system, "PingFang SC", "Noto Sans SC", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 a { color: inherit; }
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -58,8 +56,7 @@ button { cursor: pointer; }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
 
 /* ---- the window: sidebar and content */
-.app { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: calc(100dvh - 32px); margin: 16px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 22px; overflow: hidden; box-shadow: var(--window-shadow); }
+.app { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100dvh; background: var(--bg); overflow: hidden; }
 .content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .narrow-only, .rail-only { display: none; }
 
@@ -318,7 +315,7 @@ button { cursor: pointer; }
   .kpi-foot { width: 100%; padding: 0 14px 10px; }
 }
 @media (max-width: 760px) {
-  .app { grid-template-columns: minmax(0, 1fr); margin: 0; height: 100dvh; border-radius: 0; border: 0; }
+  .app { grid-template-columns: minmax(0, 1fr); }
   .side { position: fixed; top: 10px; left: 10px; bottom: 10px; width: min(300px, calc(100vw - 20px)); z-index: 25; border: 1px solid var(--border); border-radius: 18px;
     transform: translateX(calc(-100% - 20px)); transition: transform .25s; box-shadow: 0 24px 60px rgba(20,20,18,.18); }
   .side.open { transform: none; }
