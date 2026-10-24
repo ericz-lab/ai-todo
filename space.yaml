@@ -64,7 +64,8 @@ provides:
     description: Keep a picture as a new task. Multipart { file (PNG or JPEG), text? (first line is the title, the rest the notes; 截图 without it), via?, id? (a repeated id answers the first task) }; answers { ok, todo, url, label }. The picture is the task's first record.
     http: { method: POST, path: /api/capabilities/capture-image }
     timeout: 30s
-    callers: [space]
+    # `seoul/space`: a screenshot the hub forwards to this machine (needs ai-space with <hub>/<app> callers).
+    callers: [space, seoul/space]
     capture:
       kinds: [image]
       title: Todo
