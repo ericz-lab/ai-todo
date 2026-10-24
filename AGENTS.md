@@ -67,7 +67,13 @@ See `.env.example`. Provided by ai-space: `PORT`, `SPACE_APP`, `SPACE_APP_DIR`, 
 
 ## Deployment
 
-Fill in once live: host, workspace path, unit name, port, deploy command, public URL, access rule.
+- Host: the `thinkbook` space (Local edition on a Linux laptop kept always on, `SPACE_NAME=thinkbook`), workspace `~/.ai-space`, code in `apps/ai-todo` (the bare repository's work tree, no `.git`). It is a peer of the seoul space, whose panel lists it and forwards calls to it. Moved from seoul on 2026-10-24.
+- Deploy: `git push deploy main` (remote `deploy` = `~/ai-todo.git` on that machine; its `post-receive` hook from `deploy/post-receive` runs `space app deploy ai-todo`: checkout, the manifest's checks, sync, restart only when they pass).
+- Service: supervised by ai-space (`SPACE_SUPERVISOR=space`) as the user unit `space-ai-todo.service`, `127.0.0.1:8970`, health `GET /healthz`. Logs: `space logs ai-todo -n 50`.
+- Data: `data/ai-todo/main.db` (`DATABASE_URL` in `data/ai-todo/space.env`), pictures in R2 under `s3://my-bucket/ai-todo/` (`BLOB_URL`); the space's `ai-todo/backup` task snapshots it nightly to `s3://my-bucket/backups-thinkbook/`. Snapshots from before the move are under seoul's `backups/` prefix.
+- Public URL: `https://ai-todo.example.com/` through the space router's wildcard rule (Caddy on loopback, Cloudflare tunnel `thinkbook`), behind Cloudflare Access (`*.example.com`). The old `ai-todo.example.com` name ended with the move.
+- First deploy of a new directory needs `space app sync` once (the hook's per-app sync answers 404 for an app the space has not seen).
+- Source: https://github.com/ericz-lab/ai-todo, remote `origin`.
 
 ## Known pitfalls
 
