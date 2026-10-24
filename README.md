@@ -37,6 +37,8 @@ bun src/cli.ts show 3                    # includes recent records
 - `GET /api/todos/:id` includes the first page as `records` and `recordsNextBefore`.
 - Chat can append with `{ "op": "record", "id": 3, "content": "..." }`. Chat context includes excerpts of the latest three records per displayed todo; execution includes up to five recent records. Use the detail or CLI for the full history.
 
+Another app reads the list through ai-space's bus (`POST /api/call/ai-todo/<capability>`): `list` answers tasks with their newest records (`{ status?, q?, tag?, project?, limit?, records? }`) and `task` one task in full (`{ id }`), both without changing anything. product-desk's board shows the specs this way.
+
 There are no edit or delete endpoints for individual records. Each append and its audit event are committed together. A POST is one new entry; callers should check recent records before retrying after an uncertain network response.
 
 ## Run locally

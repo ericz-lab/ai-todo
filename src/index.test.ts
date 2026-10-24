@@ -166,6 +166,29 @@ describe("service", () => {
     expect(() => actionDue("2026-03-08", "02:30", "America/New_York", "Asia/Shanghai")).toThrow(/does not exist/);
     expect(actionDue(undefined, undefined, "UTC", "Asia/Shanghai")).toBeNull();
   });
+  test("list and task read for another app: tasks with records, one task in full, nothing changed", async () => {
+    const call = (cap: string, b: Record<string, unknown>) => j(`/api/capabilities/${cap}`, { method: "POST", headers: { "x-space-caller": "product-desk" }, body: JSON.stringify(b) });
+    const made = await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "Board page", tags: ["spec", "ready"], project: "product-desk", notes: "1. shows the columns" }) });
+    const spec = made.body.todo as Todo;
+    for (const content of ["spec written", "built in 1a2b3c", "accepted"]) await j(`/api/todos/${spec.id}/records`, { method: "POST", body: JSON.stringify({ content, source: "cli" }) });
+    const list = await call("list", { tag: "spec", project: "product-desk", records: 2 });
+    expect(list.status).toBe(200);
+    const todos = list.body.todos as (Todo & { records: { content: string }[] })[];
+    expect(todos.map((t) => t.id)).toEqual([spec.id]);
+    expect(todos[0]!.records.map((r) => r.content)).toEqual(["accepted", "built in 1a2b3c"]);
+    expect(((await call("list", { project: "nowhere" })).body.todos as unknown[]).length).toBe(0);
+    expect(((await call("list", { status: "all", records: 0 })).body.todos as { records: unknown[] }[]).every((t) => t.records.length === 0)).toBe(true);
+    expect((await call("list", { status: "later" })).status).toBe(400);
+    const one = await call("task", { id: spec.id });
+    expect(one.status).toBe(200);
+    expect(one.body.todo).toMatchObject({ id: spec.id, title: "Board page", tags: ["spec", "ready"] });
+    expect((one.body.records as { content: string }[]).map((r) => r.content)).toEqual(["accepted", "built in 1a2b3c", "spec written"]);
+    expect(one.body).toHaveProperty("events"); expect(one.body).toHaveProperty("subtasks"); expect(one.body).toHaveProperty("runs");
+    expect((await call("task", { id: 999999 })).status).toBe(404);
+    expect((await call("task", {})).status).toBe(404);
+    // Reads leave no trace: the task's events are still the create and the three records.
+    expect(((await j(`/api/todos/${spec.id}`)).body.events as unknown[]).length).toBe(4);
+  });
   test("a todo added by another app through the bus records its caller", async () => {
     const r = await j("/api/todos/bulk", { method: "POST", headers: { "x-space-caller": "ai-spark" }, body: JSON.stringify({ drafts: [{ title: "from an idea" }], source: "ai" }) });
     const id = (r.body.todos as Todo[])[0]!.id;

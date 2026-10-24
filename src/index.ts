@@ -22,7 +22,7 @@ import {
   appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos,
   openDb, projectCounts, reorderTodos, runningRun, tagCounts, updateTodo,
 } from "./db.ts";
-import type { Action, Draft, Run, Source, Status, Todo } from "./types.ts";
+import { STATUSES, type Action, type Draft, type Run, type Source, type Status, type Todo } from "./types.ts";
 import { widgetPayload } from "./widget.ts";
 
 export interface ServerOptions {
@@ -301,6 +301,31 @@ export function createServer(opts: ServerOptions) {
             const todo = createTodo(db, cleanDraft({ title: b.title, notes: b.notes, due }), "manual", { ...caller(req), ...(key ? { idempotencyKey: key } : {}) });
             return json({ ok: true, items: [receipt(todo)] }, 201);
           } catch (e) { return fail((e as Error).message); }
+        },
+      },
+      // `list` for other apps (space.yaml `provides.list`): tasks with their latest records, for a page that
+      // shows the list's work elsewhere (product-desk's board). Body { status?, q?, tag?, project?, limit?, records? }.
+      "/api/capabilities/list": {
+        POST: async (req) => {
+          const b = await body(req);
+          const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 100) : undefined);
+          const status = str(b.status) ?? "active";
+          if (!["active", "all", ...STATUSES].includes(status)) return fail(`status must be active, all or one of ${STATUSES.join(", ")}`);
+          const limit = Math.min(Math.max(Number(b.limit) || 200, 1), 500);
+          const perTodo = Math.min(Math.max(b.records === undefined || b.records === null ? 5 : Number(b.records) || 0, 0), 20);
+          const todos = listTodos(db, { status: status as Status | "active" | "all", q: str(b.q), tag: str(b.tag), project: str(b.project) }).slice(0, limit);
+          return json({ ok: true, todos: todos.map((t) => ({ ...t, records: perTodo ? listRecords(db, t.id, perTodo) : [] })) });
+        },
+      },
+      // `task` for other apps (space.yaml `provides.task`): one task in full, by id in the body since a bus call
+      // has no path. The same shape as GET /api/todos/:id.
+      "/api/capabilities/task": {
+        POST: async (req) => {
+          const b = await body(req);
+          const id = idOf(String(b.id ?? "")); const todo = id && getTodo(db, id);
+          if (!todo) return fail("no such todo", 404);
+          const parent = todo.parentId ? getTodo(db, todo.parentId) : null;
+          return json({ ok: true, todo, parent, ...recordPage(todo.id), subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
         },
       },
       // `record` for other apps (space.yaml `provides.record`): a record with images on a task, by id in the body,

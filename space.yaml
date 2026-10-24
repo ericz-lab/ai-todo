@@ -47,6 +47,14 @@ provides:
     description: Add tasks, all or nothing. Body { drafts [{ title, notes?, due? (YYYY-MM-DD or YYYY-MM-DDTHH:MM), priority? (0-3), tags?, project? }], parentId?, source? (ai or manual) }; answers { ok, todos } with their ids.
     http: { method: POST, path: /api/todos/bulk }
     timeout: 30s
+  list:
+    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, deferred, done, dropped; default active), q?, tag?, project?, limit? (max 500), records? (per task, default 5) }; answers { ok, todos [{ ...todo, records [newest first] }] }.
+    http: { method: POST, path: /api/capabilities/list }
+    timeout: 30s
+  task:
+    description: Read one task in full; nothing is changed. Body { id }; answers { ok, todo, parent, records, recordsNextBefore, subtasks, events, runs } like GET /api/todos/:id.
+    http: { method: POST, path: /api/capabilities/task }
+    timeout: 30s
   record:
     description: Add a record to a task, with pictures. Multipart { todoId, content? (text, may be empty when there are images), source? (manual, ai, chat or cli), images (0-6 PNG, JPEG, GIF or WebP files) }; answers { ok, record } with its attachments. The whole call is capped at 4 MiB by the bus.
     http: { method: POST, path: /api/capabilities/record }
