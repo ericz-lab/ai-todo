@@ -8,6 +8,7 @@ import {
 } from "./db.ts";
 import { createServer } from "./index.ts";
 import { chatContext, cleanAction, executePrompt, PLAN_PROMPT_CHARS } from "./ai.ts";
+import { migratePlans } from "./migrate-plans.ts";
 
 describe("plans", () => {
   test("each write is a version; the todo carries the latest; events hold the number only", () => {
@@ -282,5 +283,40 @@ describe("plans in the AI paths", () => {
     expect(cleanAction({ op: "update", id: 1, plan: "p" })).toEqual({ op: "update", id: 1, plan: "p" });
     for (const bad of [{ op: "plan", id: 1 }, { op: "plan", id: 1, content: "x".repeat(50_001) }, { op: "plan", id: 1, content: "x", expectedVersion: -1 },
       { op: "edit-record", id: 1, content: "x" }, { op: "edit-record", id: 1, recordId: 2, content: "" }, { op: "rewrite", id: 1 }]) expect(() => cleanAction(bad)).toThrow();
+  });
+});
+
+describe("the one-time copy of evaluations into plans", () => {
+  test("the newest evaluation of a todo without a plan becomes v1; records stay; a dry run and a rerun write nothing", () => {
+    const db = openDb(":memory:");
+    const a = createTodo(db, { title: "Evaluated twice" });
+    const b = createTodo(db, { title: "Has a plan", plan: "mine" });
+    const c = createTodo(db, { title: "Not evaluated" });
+    const gone = createTodo(db, { title: "Deleted" });
+    appendRecord(db, a.id, "## AI 评估（旧）\n\nold", "cli");
+    const newest = appendRecord(db, a.id, "## AI 评估（更新）\n\nnew", "cli")!;
+    appendRecord(db, a.id, "progress, not an evaluation", "cli");
+    appendRecord(db, b.id, "## AI 评估\n\nfor b", "cli");
+    appendRecord(db, c.id, "plain record", "cli");
+    appendRecord(db, gone.id, "## AI 评估\n\nfor a deleted todo", "cli");
+    db.query("DELETE FROM todos WHERE id = ?").run(gone.id);
+    const before = db.query("SELECT * FROM todo_records ORDER BY id").all();
+
+    const dry = migratePlans(db, true);
+    expect(dry.map((m) => [m.todoId, m.action])).toEqual([[a.id, "copy"], [b.id, "has-plan"], [gone.id, "no-todo"]]);
+    expect(dry[0]!.recordId).toBe(newest.id);
+    expect(getTodo(db, a.id)!.planVersion).toBe(0);
+
+    migratePlans(db, false);
+    expect(getTodo(db, a.id)).toMatchObject({ plan: "## AI 评估（更新）\n\nnew", planVersion: 1 });
+    expect(getPlanVersion(db, a.id, 1)!.source).toBe("ai");
+    expect(listEvents(db, a.id)[0]).toMatchObject({ kind: "plan-edited", data: { source: "ai", version: 1, migratedFrom: newest.id } });
+    expect(getTodo(db, b.id)!.plan).toBe("mine");
+    expect(getTodo(db, c.id)!.planVersion).toBe(0);
+    expect(db.query("SELECT * FROM todo_records ORDER BY id").all()).toEqual(before);
+
+    expect(migratePlans(db, false).filter((m) => m.action === "copy")).toEqual([]);
+    expect(getTodo(db, a.id)!.planVersion).toBe(1);
+    db.close();
   });
 });

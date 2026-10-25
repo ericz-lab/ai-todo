@@ -1,17 +1,20 @@
 /**
  * The page: sidebar (views, projects, tags), the AI panel, the grouped list (subtasks under
- * their parent) and the detail modal (fields, subtasks, AI execution runs, history). The AI panel is ai-space's chat widget fed with
+ * their parent) and the detail modal (fields, plan with its versions, subtasks, editable records, AI execution runs, history). The AI panel is ai-space's chat widget fed with
  * the whole list: an answer may carry a `todo-drafts` block (rendered as editable drafts the
  * person adds) or a `todo-actions` block (applied by the server, the results listed under the
  * answer).
  */
 
 type Status = "open" | "doing" | "deferred" | "done" | "dropped";
-type Todo = { id: number; title: string; notes: string; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
+type Todo = { id: number; title: string; notes: string; plan: string; planVersion: number; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
-type OperationRecord = { attachments?: { key: string; name: string }[]; id: number; todoId: number; content: string; source: string; createdAt: string };
+type OperationRecord = { attachments?: { key: string; name: string }[]; id: number; todoId: number; content: string; source: string; createdAt: string; revision: number; editedAt: string | null };
+type PlanMeta = { version: number; source: string; createdAt: string };
+type PlanVersionRow = { version: number; source: string; createdAt: string; chars: number; excerpt: string };
+type RecordRevision = { revision: number; content: string; source: string; createdAt: string };
 type RecordPage = { records: OperationRecord[]; recordsNextBefore: number | null };
 type ChatMessage = { id: number; role: "user" | "assistant"; content: string; error?: string; live?: boolean };
 type ChatContext = { system?: string; text?: string; ack?: string; tools?: string[]; model?: string; thinking?: number };
@@ -189,7 +192,7 @@ function renderHead() {
 
 // ---- search: the listed todos by title, notes, project and tags, in the page
 const searchBox = $<HTMLInputElement>("#search");
-const matches = (t: Todo) => !query || [t.title, t.notes, t.project ?? "", ...t.tags].some((s) => s.toLowerCase().includes(query.toLowerCase()));
+const matches = (t: Todo) => !query || [t.title, t.notes, t.plan ?? "", t.project ?? "", ...t.tags].some((s) => s.toLowerCase().includes(query.toLowerCase()));
 const visible = () => todos.filter(matches);
 searchBox.oninput = () => { query = searchBox.value.trim(); renderHead(); renderList(); };
 searchBox.onkeydown = (e) => { if (e.key === "Escape") { searchBox.value = ""; query = ""; renderHead(); renderList(); searchBox.blur(); } };
@@ -332,14 +335,15 @@ const d = {
   subsN: $("#d-subs-n"), subsList: $("#d-subs-list"), subAdd: $<HTMLInputElement>("#d-sub-add"), parent: $("#d-parent"),
 };
 let curSubs: Todo[] = [];
-type Detail = RecordPage & { todo: Todo; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
+type Detail = RecordPage & { todo: Todo; planMeta: PlanMeta | null; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
 async function openDetail(id: number, execute = false) {
   // Moving from one todo to another (a subtask, its parent) keeps what was typed in the first.
-  if (cur) { clearTimeout(saveTimer); await flushSave(); liveAbort?.abort(); liveAbort = null; }
+  if (cur) { clearTimeout(saveTimer); await flushSave(); await flushPlan(); liveAbort?.abort(); liveAbort = null; }
   const r = await api<Detail>(`/api/todos/${id}`).catch((e) => { toast((e as Error).message); return null; });
   if (!r) return;
   cur = r.todo;
   fillDetail(r.todo);
+  fillPlan(r.todo, r.planMeta);
   renderSubs(r.parent, r.subtasks);
   renderRuns(r.runs);
   renderEvents(r.events);
@@ -374,7 +378,7 @@ d.notesView.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) retur
 d.notes.onblur = () => showNotes("view");
 function closeDetail() {
   if (!cur) return;
-  clearTimeout(saveTimer); void flushSave();
+  clearTimeout(saveTimer); void flushSave(); void flushPlan();
   liveAbort?.abort(); liveAbort = null;
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
   history.replaceState(null, "", location.pathname);
@@ -383,6 +387,152 @@ function closeDetail() {
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => { if (!els.detail.hidden) closeDetail(); else closeDrawers(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+// A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
+window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
+
+// ---- the plan (方案): one living Markdown document, autosaved as a version; earlier versions can be read and restored
+const plan = {
+  text: $<HTMLTextAreaElement>("#d-plan"), view: $("#d-plan-view"), meta: $("#d-plan-meta"), state: $("#d-plan-state"),
+  conflictBar: $("#d-plan-conflict"), drawer: $("#d-plan-drawer"), list: $("#d-plan-list"), show: $("#d-plan-show"), versionsBtn: $<HTMLButtonElement>("#d-plan-versions"),
+  /** The version the text in the box is based on; a save says so, and the server answers 409 when it moved on. */
+  version: 0,
+  /** One id per opened detail: saves with it merge into this editor's own latest version for a minute. */
+  session: "",
+  dirty: false,
+  timer: undefined as ReturnType<typeof setTimeout> | undefined,
+  saving: null as Promise<void> | null,
+  /** What the server holds when a save was refused; the bar offers it or an overwrite. */
+  conflict: null as { plan: string; planVersion: number } | null,
+};
+const newSession = () => (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).slice(0, 64);
+function planMetaText(meta: PlanMeta | null) {
+  plan.meta.textContent = meta ? `v${meta.version} · ${fmtAgo(meta.createdAt)} · ${meta.source}` : "还没有方案";
+}
+function fillPlan(t: Todo, meta: PlanMeta | null) {
+  clearTimeout(plan.timer);
+  plan.version = t.planVersion; plan.session = newSession(); plan.dirty = false; plan.conflict = null;
+  plan.text.value = t.plan; plan.state.textContent = ""; plan.conflictBar.hidden = true;
+  plan.drawer.hidden = true; plan.versionsBtn.setAttribute("aria-expanded", "false"); plan.versionsBtn.hidden = !t.planVersion;
+  planMetaText(meta);
+  showPlan(t.plan ? "view" : "edit");
+}
+function showPlan(mode: "view" | "edit") {
+  if (mode === "view" && plan.text.value.trim()) { plan.view.innerHTML = renderMd(plan.text.value); plan.view.hidden = false; plan.text.hidden = true; }
+  else { plan.view.hidden = true; plan.text.hidden = false; sizePlan(); }
+}
+function sizePlan() { plan.text.style.height = "auto"; plan.text.style.height = `${Math.max(84, plan.text.scrollHeight + 2)}px`; }
+plan.view.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) return; showPlan("edit"); plan.text.focus(); };
+plan.text.onblur = () => { if (!plan.conflict) showPlan("view"); };
+function schedulePlan() {
+  plan.dirty = true;
+  if (plan.conflict) return;   // nothing is saved until the person chooses in the bar
+  plan.state.textContent = "未保存";
+  clearTimeout(plan.timer);
+  plan.timer = setTimeout(() => void flushPlan(), 500);
+}
+// As for the notes: while an IME composes, the box holds raw syllables; save when the word is committed.
+plan.text.oninput = (e) => { sizePlan(); if (!(e as InputEvent).isComposing) schedulePlan(); };
+plan.text.addEventListener("compositionend", () => schedulePlan());
+/** One PUT of the plan; answers the parsed body and the status, so a 409 can be shown instead of thrown. */
+async function putPlan(id: number, body: Record<string, unknown>) {
+  const r = await fetch(`/api/todos/${id}/plan`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: "manual", ...body }) });
+  return { status: r.status, body: (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; todo?: Todo; planMeta?: PlanMeta | null; plan?: string; planVersion?: number } };
+}
+async function flushPlan(force = false): Promise<void> {
+  clearTimeout(plan.timer);
+  if (plan.saving) await plan.saving;
+  if (!cur || !plan.dirty || (plan.conflict && !force)) return;
+  const id = cur.id, content = plan.text.value;
+  plan.dirty = false;
+  plan.state.textContent = "保存中…";
+  plan.saving = (async () => {
+    try {
+      const r = await putPlan(id, { content, expectedVersion: plan.version, session: plan.session });
+      if (cur?.id !== id) return;
+      if (r.status === 409) {
+        plan.dirty = true;
+        plan.conflict = { plan: r.body.plan ?? "", planVersion: r.body.planVersion ?? 0 };
+        plan.conflictBar.hidden = false; plan.state.textContent = "未保存";
+        showPlan("edit");
+        return;
+      }
+      if (!r.body.ok || !r.body.todo) throw new Error(r.body.error ?? `HTTP ${r.status}`);
+      plan.version = r.body.todo.planVersion; cur = { ...cur, plan: r.body.todo.plan, planVersion: r.body.todo.planVersion };
+      if (plan.text.value !== content) plan.dirty = true;   // typed while saving: the next save carries it
+      plan.state.textContent = plan.dirty ? "未保存" : "已保存";
+      plan.versionsBtn.hidden = !plan.version;
+      planMetaText(r.body.planMeta ?? null);
+      if (!plan.drawer.hidden) void loadPlanVersions();
+    } catch (e) {
+      plan.dirty = true; plan.state.textContent = "保存失败";
+      toast(`方案保存失败：${(e as Error).message}`);
+    }
+  })();
+  await plan.saving;
+  plan.saving = null;
+  if (plan.dirty && !plan.conflict && cur?.id === id) schedulePlan();
+}
+$("#d-plan-reload").onclick = () => {
+  if (!plan.conflict) return;
+  plan.text.value = plan.conflict.plan; plan.version = plan.conflict.planVersion;
+  plan.conflict = null; plan.dirty = false; plan.conflictBar.hidden = true; plan.state.textContent = "已载入最新";
+  showPlan(plan.text.value ? "view" : "edit");
+  if (cur) void api<Detail>(`/api/todos/${cur.id}`).then((r) => { if (cur?.id === r.todo.id) { planMetaText(r.planMeta); renderEvents(r.events); } }, () => {});
+};
+$("#d-plan-force").onclick = async () => {
+  if (!plan.conflict || !confirm("用你的版本覆盖最新方案？被覆盖的版本仍可在「版本」里找回。")) return;
+  // Based on the version that is there now, as a new version of its own (no merging into someone else's).
+  plan.version = plan.conflict.planVersion; plan.session = newSession();
+  plan.conflict = null; plan.conflictBar.hidden = true;
+  plan.dirty = true;
+  await flushPlan(true);
+};
+plan.versionsBtn.onclick = async () => {
+  const open = plan.drawer.hidden;
+  plan.drawer.hidden = !open; plan.versionsBtn.setAttribute("aria-expanded", String(open));
+  if (open) { plan.show.innerHTML = ""; await loadPlanVersions(); }
+};
+async function loadPlanVersions() {
+  if (!cur) return;
+  const id = cur.id;
+  try {
+    const r = await api<{ versions: PlanVersionRow[] }>(`/api/todos/${id}/plan/versions`);
+    if (cur?.id !== id) return;
+    plan.list.innerHTML = r.versions.map((v) => `<button class="plan-ver${v.version === plan.version ? " current" : ""}" data-version="${v.version}">
+      <b>v${v.version}</b><span>${esc(fmtAgo(v.createdAt))} · ${esc(v.source)} · ${v.chars} 字${v.version === plan.version ? " · 当前" : ""}</span><i>${esc(v.excerpt || "（空）")}</i></button>`).join("") || `<p class="record-hint">还没有版本</p>`;
+  } catch (e) { toast((e as Error).message); }
+}
+plan.list.onclick = async (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-version]");
+  if (!b || !cur) return;
+  const id = cur.id, n = Number(b.dataset.version);
+  plan.list.querySelectorAll(".plan-ver").forEach((x) => x.classList.toggle("on", x === b));
+  try {
+    const { version: v } = await api<{ version: PlanVersionRow & { content: string } }>(`/api/todos/${id}/plan/versions?version=${n}`);
+    if (cur?.id !== id) return;
+    plan.show.innerHTML = `<div class="run-head"><b>v${v.version}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${v.version === plan.version ? `<span>当前版本</span>` : `<button class="btn small" data-restore="${v.version}">恢复此版</button>`}</div>
+      <div class="md">${v.content ? renderMd(v.content) : `<p class="record-hint">（空）</p>`}</div>`;
+    const restore = plan.show.querySelector<HTMLButtonElement>("[data-restore]");
+    if (restore) restore.onclick = async () => {
+      // A restore is a new version with that text; nothing is removed.
+      await flushPlan();
+      if (plan.conflict || cur?.id !== id) { toast("先处理方案冲突"); return; }
+      restore.disabled = true;
+      const r = await putPlan(id, { content: v.content, expectedVersion: plan.version });
+      if (r.status === 409) { toast("方案刚被他人更新，请重新打开版本列表"); restore.disabled = false; return; }
+      if (!r.body.ok || !r.body.todo) { toast(r.body.error ?? "恢复失败"); restore.disabled = false; return; }
+      if (cur?.id !== id) return;
+      cur = { ...cur, plan: r.body.todo.plan, planVersion: r.body.todo.planVersion };
+      fillPlan(cur, r.body.planMeta ?? null);
+      plan.drawer.hidden = false; plan.versionsBtn.setAttribute("aria-expanded", "true");
+      await loadPlanVersions();
+      plan.show.innerHTML = "";
+      toast(`已恢复 v${v.version}，保存为 v${r.body.todo.planVersion}`);
+      const detail = await api<Detail>(`/api/todos/${id}`);
+      if (cur?.id === id) renderEvents(detail.events);
+    };
+  } catch (err) { toast((err as Error).message); }
+};
 
 let pending: Record<string, unknown> = {};
 function scheduleSave(patch: Record<string, unknown>) {
@@ -469,7 +619,7 @@ d.defer.onclick = async () => {
   const restoring = cur.status === "deferred";
   d.defer.disabled = true;
   try {
-    clearTimeout(saveTimer); await flushSave();
+    clearTimeout(saveTimer); await flushSave(); await flushPlan();
     const r = await api<{ todo: Todo }>(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: restoring ? "open" : "deferred" }) });
     await load();
     if (cur?.id === id) await openDetail(id);
@@ -514,16 +664,78 @@ d.recordContent.addEventListener("paste", event => {
   if (files.length) { event.preventDefault(); addRecordImages(files); }
 });
 let recordCursor: number | null = null;
+/** The records on screen by id, for editing in place. */
+const shownRecords = new Map<number, OperationRecord>();
+const recordHtml = (r: OperationRecord) => `<article class="operation-record" data-rid="${r.id}">
+    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button class="btn small" data-edit>编辑</button></div>
+    <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="/blobs/${esc(image.key)}" target="_blank" rel="noopener"><img src="/blobs/${esc(image.key)}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
 function renderRecords(page: RecordPage, append = false) {
-  const html = page.records.map((r) => `<article class="operation-record">
-    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span></div>
-    <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="/blobs/${esc(image.key)}" target="_blank" rel="noopener"><img src="/blobs/${esc(image.key)}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`).join("");
+  if (!append) shownRecords.clear();
+  for (const r of page.records) shownRecords.set(r.id, r);
+  const html = page.records.map(recordHtml).join("");
   if (append) d.records.insertAdjacentHTML("beforeend", html);
   else d.records.innerHTML = html || `<p class="record-hint">还没有操作记录</p>`;
   recordCursor = page.recordsNextBefore;
   d.recordMore.hidden = recordCursor === null;
 }
 d.recordContent.oninput = () => { if (cur) recordDrafts.set(cur.id, d.recordContent.value); };
+// Editing a record in place: the text becomes a box with save and cancel; the server keeps the earlier text.
+d.records.addEventListener("click", async (e) => {
+  const target = e.target as HTMLElement;
+  const article = target.closest<HTMLElement>(".operation-record");
+  if (!article || !cur) return;
+  const rid = Number(article.dataset.rid), record = shownRecords.get(rid);
+  if (!record) return;
+  const todoId = cur.id;
+  if (target.closest("[data-edit]")) {
+    if (article.querySelector(".record-edit")) return;
+    const md = $(".md", article);
+    md.hidden = true;
+    const box = el(`<div class="record-edit"><textarea class="d-notes" maxlength="20000" spellcheck="false"></textarea>
+      <div class="record-edit-bar"><span class="record-hint">只在更正事实时编辑；结论变了请追加新记录。旧版本会保留。</span><div class="grow"></div><button class="btn small" data-cancel>取消</button><button class="btn small primary" data-save>保存</button></div></div>`);
+    const ta = $<HTMLTextAreaElement>("textarea", box);
+    ta.value = record.content;
+    md.after(box);
+    ta.style.height = `${Math.max(84, ta.scrollHeight + 2)}px`;
+    ta.focus();
+    $<HTMLElement>("[data-cancel]", box).onclick = () => { box.remove(); md.hidden = false; };
+    const save = $<HTMLButtonElement>("[data-save]", box);
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        const r = await fetch(`/api/todos/${todoId}/records/${rid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: ta.value, source: "manual", expectedRevision: record.revision }) });
+        const b = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; record?: OperationRecord };
+        if (r.status === 409 && b.record) {
+          // Someone edited it meanwhile: show theirs, keep this text in the box to merge by hand.
+          shownRecords.set(rid, b.record);
+          $(".md", article).innerHTML = renderMd(b.record.content);
+          toast("这条记录刚被他人修改，已更新下方原文；你的修改仍在输入框里");
+          record.revision = b.record.revision; record.content = b.record.content;
+          save.disabled = false;
+          return;
+        }
+        if (!r.ok || !b.ok || !b.record) throw new Error(b.error ?? `HTTP ${r.status}`);
+        shownRecords.set(rid, b.record);
+        article.outerHTML = recordHtml(b.record);
+        toast(b.record.revision === record.revision ? "没有改动" : "记录已更新，旧版本已保留");
+        const detail = await api<Detail>(`/api/todos/${todoId}`);
+        if (cur?.id === todoId) renderEvents(detail.events);
+      } catch (err) { toast((err as Error).message); save.disabled = false; }
+    };
+    return;
+  }
+  if (target.closest("[data-revisions]")) {
+    const open = article.querySelector(".revisions");
+    if (open) { open.remove(); return; }
+    try {
+      const { revisions } = await api<{ revisions: RecordRevision[] }>(`/api/todos/${todoId}/records/${rid}/revisions`);
+      const list = el(`<div class="revisions">${[...revisions].reverse().map((v, i) => `<div class="revision">
+        <div class="run-head"><b>${v.revision === 0 ? "原文" : `修订 ${v.revision}`}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${i === 0 ? "<span>当前</span>" : ""}</div>
+        <div class="md">${v.content ? renderMd(v.content) : `<p class="record-hint">（无文字）</p>`}</div></div>`).join("")}</div>`);
+      $(".record-images", article).after(list);
+    } catch (err) { toast((err as Error).message); }
+  }
+});
 d.recordAdd.onclick = async () => {
   if (!cur || d.recordAdd.disabled || (!d.recordContent.value.trim() && !recordImages.get(cur.id)?.length)) return;
   const id = cur.id, content = d.recordContent.value;
@@ -569,18 +781,19 @@ function runHtml(r: Run): string {
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = { "plan-edited": "修改方案", "record-edited": "编辑操作记录", "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";
-    return `<div><span class="k">${label[e.kind] ?? esc(e.kind)}</span>${esc(fmtAgo(e.at))}${src}${changed ? ` · ${esc(changed)}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}</div>`;
+    const version = e.kind === "plan-edited" && e.data.version ? ` · v${esc(String(e.data.version))}` : e.kind === "record-edited" && e.data.revision ? ` · 记录 ${esc(String(e.data.recordId))} 修订 ${esc(String(e.data.revision))}` : "";
+    return `<div><span class="k">${label[e.kind] ?? esc(e.kind)}</span>${esc(fmtAgo(e.at))}${src}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}</div>`;
   }).join("") || `<div>无</div>`;
 }
 
 /** Start an execution, or reattach to the one in flight, and draw it as it streams. */
 async function runExecute() {
   if (!cur) return;
-  clearTimeout(saveTimer); await flushSave();
+  clearTimeout(saveTimer); await flushSave(); await flushPlan();
   followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, timezone: TZ }) });
 }
 function followRun(url: string, init: RequestInit) {
@@ -764,7 +977,7 @@ async function mountChat() {
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
         const ul = appliedNotes.get(m.id);
-        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", delete: "删除" };
+        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
         toast(`AI 改了清单：${ok}/${r.results.length} 项成功`);

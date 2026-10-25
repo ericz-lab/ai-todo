@@ -36,6 +36,7 @@ src/types.ts           data model
 src/config.ts          environment
 src/blobs.ts           private BLOB_URL image storage (file or S3), following trade-journal
 src/cli.ts             the CLI the planner agent uses
+src/migrate-plans.ts   one-time copy of `## AI 评估` records into plans (--dry-run first)
 web/index.html         the page shell; app.ts the logic; styles.css the glass
 agents/planner.md      system prompt of the `planner` agent; planner.svg its avatar
 skills/todo/SKILL.md   the skill ai-space links into the workspace: the list from any agent session
@@ -84,6 +85,7 @@ See `.env.example`. Provided by ai-space: `PORT`, `SPACE_APP`, `SPACE_APP_DIR`, 
 - `renderAssistant` runs before `onReply` finishes: the applied-actions list is created empty in the render and filled from the apply result by message id.
 - Markdown (notes, AI runs) is rendered by the space's own renderer, `SpaceChat.renderMd` from the chat widget the page already loads; there is no copy of it here. Without ai-space the page falls back to escaped paragraphs.
 - Nodes returned from `renderAssistant` land inside the widget's shadow root: the page stylesheet does not apply there, only inherited custom properties do, so the draft cards carry their own `<style>` (`INNER_CSS`).
+- The detail's plan autosaves the same way with `expectedVersion` and a per-opening `session`; a 409 stops autosave and shows a bar (载入最新 / 覆盖, an overwrite is a new version based on the latest). 版本 lists versions; 恢复此版 writes that text as a new version. A record's 编辑 edits in place with `expectedRevision`; 已编辑 opens its revisions.
 - The detail autosaves title and notes half a second after typing and not while an IME composes (`compositionend` saves). A run of such saves of the same field(s) from the same source, each within a minute of the todo's latest event, extends that one `edited` event (`mergeEdit` in `db.ts`: `from` before the session, `to` the last save) instead of adding a line per pause; any other change is its own row.
 - Drafts already added are remembered per browser (`localStorage` `todo-added`, message ids) so a reloaded thread does not offer them again; another browser will.
 

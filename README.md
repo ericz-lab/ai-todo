@@ -31,6 +31,7 @@ bun src/cli.ts plan-history 3 [--version 1]
 - `PUT /api/todos/:id/plan { content, source, expectedVersion?, session? }` answers `{ ok, todo, planMeta }`, or 409 `{ conflict, plan, planVersion }` when `expectedVersion` is not the current version. `GET /api/todos/:id/plan/versions[?version=n]` lists the versions or answers one in full. `POST /api/todos` accepts `plan` as the first version.
 - Chat: `{ "op": "plan", "id": 3, "content": "…", "expectedVersion": 2 }`. The executor reads the plan.
 - Other apps: the `plan` capability writes it, `task` reads it in full, `list` answers a 300-character `planExcerpt` unless `plan: true`.
+- `bun src/migrate-plans.ts [--dry-run] [--db path]` copies, once, the newest `## AI 评估` record of every task without a plan into plan v1 (source `ai`, the record id in the event); the records stay and a rerun changes nothing.
 
 ## Operation records
 

@@ -107,6 +107,26 @@
       <button class="btn small" id="d-defer">暂不处理</button>
       <button class="btn small danger" id="d-delete">删除</button>
     </div>
+    <section class="plan" aria-labelledby="d-plan-label">
+      <div class="plan-head">
+        <h3 class="sub" id="d-plan-label">方案</h3>
+        <span class="plan-meta" id="d-plan-meta"></span>
+        <div class="grow"></div>
+        <span class="plan-state" id="d-plan-state" aria-live="polite"></span>
+        <button class="btn small" id="d-plan-versions" aria-expanded="false">版本</button>
+      </div>
+      <div class="plan-conflict" id="d-plan-conflict" role="alert" hidden>
+        <span>方案已被他人更新，你的修改还没有保存。</span>
+        <button class="btn small" id="d-plan-reload">载入最新</button>
+        <button class="btn small danger" id="d-plan-force">覆盖</button>
+      </div>
+      <div id="d-plan-view" class="d-notes-view md" title="点击编辑" hidden></div>
+      <textarea id="d-plan" class="d-notes" maxlength="50000" placeholder="方案：做法和设计，支持 Markdown。始终是最新版，旧版本会保留。进展和验收写到操作记录。" spellcheck="false"></textarea>
+      <div class="plan-drawer" id="d-plan-drawer" hidden>
+        <div class="plan-list" id="d-plan-list"></div>
+        <div class="plan-show" id="d-plan-show"></div>
+      </div>
+    </section>
     <div class="subs" id="d-subs">
       <div class="subs-head"><span class="sub" id="d-subs-label">子任务</span><b id="d-subs-n"></b><div class="grow"></div></div>
       <div id="d-parent" class="d-parent" hidden></div>
@@ -115,7 +135,7 @@
     </div>
     <section class="operation-records" aria-labelledby="d-records-label">
       <h3 class="sub" id="d-records-label">操作记录</h3>
-      <p class="record-hint">记录进展、操作和验证结果。每次追加独立保存，更正时请追加新记录。</p>
+      <p class="record-hint">记录进展、操作和验证结果。每次追加独立保存；可编辑，旧版本会保留。</p>
       <label class="sub" for="d-record-content">新的操作记录</label>
       <textarea id="d-record-content" class="d-notes" rows="3" maxlength="20000" placeholder="补充这次操作的内容，支持 Markdown…"></textarea>
       <label class="record-hint" for="d-record-images">添加图片（最多 6 张，每张 10 MB，也可粘贴到输入框）</label>
