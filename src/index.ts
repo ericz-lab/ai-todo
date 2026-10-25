@@ -19,10 +19,10 @@ import {
 } from "./ai.ts";
 import { config, databasePath } from "./config.ts";
 import {
-  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, createRun, createTodo, deleteTodo, editRecord, finishRun, getPlanVersion, getTodo,
-  listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, openDb, projectCounts, reorderTodos, runningRun, setPlan, tagCounts, updateTodo,
+  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getTodo,
+  listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
 } from "./db.ts";
-import { STATUSES, type Action, type Draft, type Run, type Source, type Status, type Todo } from "./types.ts";
+import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
 import { widgetPayload } from "./widget.ts";
 
 export interface ServerOptions {
@@ -38,6 +38,8 @@ export interface ServerOptions {
   lang?: string;
   executeTimeoutMs?: number;
   webTools?: boolean;
+  /** A successful execution of an open or doing todo sends it to review (验收); false keeps its status (TODO_AUTO_REVIEW=0). */
+  autoReview?: boolean;
   now?: () => Date;
 }
 
@@ -47,8 +49,22 @@ const PROXY_RESPONSE_HEADERS = ["content-type", "cache-control", "etag", "conten
 const WEB_TOOLS = ["WebSearch", "WebFetch"];
 const TZ_RE = /^[A-Za-z_]+(\/[A-Za-z_+-]+)*$/;
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+/** Answers above this many bytes are gzipped for a caller that accepts it (the done list, the chat context). */
+const GZIP_MIN_BYTES = 8 * 1024;
+/**
+ * A JSON answer. With `req`, a large one is gzipped when the caller's Accept-Encoding allows it: the
+ * page reaches this service through a tunnel whose upload is the narrow part, and nothing in between
+ * compresses.
+ */
+const json = (body: unknown, status = 200, req?: Request) => {
+  const text = JSON.stringify(body);
+  const headers: Record<string, string> = { "content-type": "application/json; charset=utf-8" };
+  if (req && text.length >= GZIP_MIN_BYTES / 3 && /\bgzip\b/.test(req.headers.get("accept-encoding") ?? "")) {
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length >= GZIP_MIN_BYTES) return new Response(Bun.gzipSync(bytes), { status, headers: { ...headers, "content-encoding": "gzip", vary: "accept-encoding" } });
+  }
+  return new Response(text, { status, headers });
+};
 const fail = (error: string, status = 400) => json({ ok: false, error }, status);
 /** A refused write: 409 with what is stored now when it was based on an older version, else 400. */
 const refuse = (e: unknown) => (e instanceof ConflictError ? json({ ok: false, error: e.message, conflict: true, ...e.current }, 409) : fail((e as Error).message));
@@ -83,6 +99,7 @@ export function createServer(opts: ServerOptions) {
   const lang = opts.lang ?? "zh";
   const defaultTz = opts.timezone ?? "Asia/Shanghai";
   const executeTimeoutMs = opts.executeTimeoutMs ?? 600_000;
+  const autoReview = opts.autoReview ?? true;
   const tools = (opts.webTools ?? true) ? WEB_TOOLS : [];
   const model: ModelClient | null = spaceApiUrl && spaceAppToken ? modelClient(spaceApiUrl, spaceAppToken) : null;
   const live = new Map<number, Live>();
@@ -97,12 +114,55 @@ export function createServer(opts: ServerOptions) {
   /** A call through ai-space's bus (space.yaml `provides`) names the calling app; it goes into the todo's `created` event. */
   const caller = (req: Request): Record<string, unknown> => { const app = req.headers.get("x-space-caller")?.trim().slice(0, 100); return app ? { caller: app } : {}; };
   const source = (v: unknown): Source => (["manual", "ai", "chat", "cli"].includes(String(v)) ? (v as Source) : "manual");
-  const listBody = (status: string | null, q: string | null, tag: string | null, project: string | null) => ({
-    ok: true,
-    todos: listTodos(db, { status: (status as Status | "active" | "all") || "active", q: q || undefined, tag: tag || undefined, project: project || undefined }),
-    tags: tagCounts(db, status === "deferred" ? "deferred" : "active"),
-    projects: projectCounts(db, status === "deferred" ? "deferred" : "active"),
-  });
+  /**
+   * GET /api/todos. `fields=list` answers the lean rows the page draws (no plan, a notes excerpt);
+   * `limit` and `before` page the done list (`nextBefore` is the next cursor, null on the last page,
+   * `total` how many match). `counts` is the size of every stage, for the sidebar.
+   */
+  const listBody = (p: URLSearchParams) => {
+    const status = (p.get("status") || "active") as Status | "active" | "all";
+    if (!["active", "all", ...STATUSES].includes(status)) throw new Error(`status must be active, all or one of ${STATUSES.join(", ")}`);
+    const rawLimit = p.get("limit");
+    const limit = rawLimit === null ? undefined : Number(rawLimit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) throw new Error("limit must be 1..500");
+    const before = p.get("before") ?? undefined;
+    const filter = { status, q: p.get("q") || undefined, tag: p.get("tag") || undefined, project: p.get("project") || undefined, before };
+    const lean = p.get("fields") === "list";
+    // One row past the page tells whether there is another.
+    const rows = (lean ? listTodoSummaries : listTodos)(db, { ...filter, limit: limit === undefined ? undefined : limit + 1 });
+    const more = limit !== undefined && rows.length > limit;
+    const todos = more ? rows.slice(0, limit) : rows;
+    const scope = status === "deferred" || status === "review" ? status : "active";
+    return {
+      ok: true, todos,
+      ...(limit !== undefined ? { total: countTodos(db, filter), nextBefore: more && status === "done" ? cursorOf(todos.at(-1)!) : null } : {}),
+      counts: statusCounts(db),
+      tags: tagCounts(db, scope),
+      projects: projectCounts(db, scope),
+    };
+  };
+
+  /** Tell the person a todo waits for their acceptance (ai-space docs/notify.md); never blocks or fails the change. */
+  const notifyReview = (t: Todo, src: Source) => {
+    if (!spaceApiUrl || !spaceAppToken) return;
+    const zh = lang === "zh";
+    const body = {
+      level: "info",
+      title: `${zh ? "待验收" : "Awaiting acceptance"} #${t.id} ${t.title}`.slice(0, 200),
+      text: src === "ai" ? (zh ? "AI 执行完成，请查看结果后通过或退回。" : "The AI finished; accept it or send it back.") : (zh ? "已提交验收，请查看后通过或退回。" : "Submitted for acceptance; accept it or send it back."),
+      ...(publicBase ? { url: `${publicBase}/?todo=${t.id}` } : {}),
+      key: `review:${t.id}`, window: "1m",
+    };
+    void fetch(`${spaceApiUrl}/api/notify`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${spaceAppToken}` }, body: JSON.stringify(body) })
+      .then((r) => { if (!r.ok) log(`notify review #${t.id}: HTTP ${r.status}`); }, (e) => log(`notify review #${t.id}: ${(e as Error).message}`));
+  };
+  /** Every status change from a request or a run goes through here, so entering review notifies once. */
+  const changeTodo = (id: number, patch: Patch, src: Source, origin: Record<string, unknown> = {}): Todo | null => {
+    const before = getTodo(db, id);
+    const after = updateTodo(db, id, patch, src, origin);
+    if (before && after && before.status !== "review" && after.status === "review") notifyReview(after, src);
+    return after;
+  };
 
   /** A record from a multipart form (`content`, `source`, up to six `images`): the images go to the blob store first and are removed again when the record is not written. */
   const saveRecord = async (id: number, form: FormData): Promise<Response> => {
@@ -192,6 +252,13 @@ export function createServer(opts: ServerOptions) {
       } catch (e) {
         finished = finishRun(db, run.id, { ok: false, output: l.text, error: (e as Error).message });
       }
+      // A finished run hands the work to the person: open or doing becomes review (验收); a failure changes nothing.
+      if (finished!.status === "ok" && autoReview) {
+        const current = getTodo(db, todo.id);
+        if (current && (current.status === "open" || current.status === "doing")) {
+          try { changeTodo(todo.id, { status: "review" }, "ai", { runId: run.id }); } catch (e) { log(`review #${todo.id}: ${(e as Error).message}`); }
+        }
+      }
       l.run = finished!;
       l.done = { ok: finished!.status === "ok", run: finished!, error: finished!.error ?? undefined };
       l.emit(l.done.ok ? "done" : "error", { ok: l.done.ok, run: finished!, error: l.done.error });
@@ -255,10 +322,15 @@ export function createServer(opts: ServerOptions) {
           continue;
         }
         if (a.op === "delete") { deleteTodo(db, a.id, src); results.push({ op: a.op, id: a.id, ok: true }); continue; }
+        // Accepting is `accept`, or `done` on a todo in review; a rejection carries its reason.
+        if (a.op === "reject" || a.op === "accept" || (a.op === "done" && before.status === "review")) {
+          results.push({ op: a.op, id: a.id, ok: true, todo: reviewTodo(db, a.id, a.op === "reject" ? "reject" : "accept", a.op === "reject" ? a.reason : undefined, src) });
+          continue;
+        }
         if (a.op === "update" && a.plan !== undefined) setPlan(db, a.id, a.plan, src);
         const patch = a.op === "update" ? (({ op: _o, id: _i, plan: _p, ...rest }) => rest)(a)
-          : a.op === "defer" ? { status: "deferred" as const } : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : { status: "open" as const };
-        results.push({ op: a.op, id: a.id, ok: true, todo: updateTodo(db, a.id, patch, src) });
+          : a.op === "defer" ? { status: "deferred" as const } : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : a.op === "review" ? { status: "review" as const } : { status: "open" as const };
+        results.push({ op: a.op, id: a.id, ok: true, todo: changeTodo(a.id, patch, src) });
       } catch (e) {
         results.push({ op: a.op, id: "id" in a ? a.id : undefined, ok: false, error: (e as Error).message });
       }
@@ -295,10 +367,10 @@ export function createServer(opts: ServerOptions) {
       "/": opts.web === false ? () => new Response("no page", { status: 404 }) : index,
       "/healthz": () => new Response("ok"),
       "/icon.svg": () => new Response(Bun.file(new URL("../icon.svg", import.meta.url).pathname)),
-      "/api/widget": () => json(widget()),
+      "/api/widget": (req) => json(widget(), 200, req),
 
       "/api/todos": {
-        GET: (req) => { const u = new URL(req.url); return json(listBody(u.searchParams.get("status"), u.searchParams.get("q"), u.searchParams.get("tag"), u.searchParams.get("project"))); },
+        GET: (req) => { try { return json(listBody(new URL(req.url).searchParams), 200, req); } catch (e) { return fail((e as Error).message); } },
         POST: async (req) => {
           const b = await body(req);
           try { return json({ ok: true, todo: createTodo(db, cleanDraft(b), source(b.source), caller(req)) }, 201); } catch (e) { return fail((e as Error).message); }
@@ -351,7 +423,7 @@ export function createServer(opts: ServerOptions) {
           const perTodo = Math.min(Math.max(b.records === undefined || b.records === null ? 5 : Number(b.records) || 0, 0), 20);
           const todos = listTodos(db, { status: status as Status | "active" | "all", q: str(b.q), tag: str(b.tag), project: str(b.project) }).slice(0, limit);
           const fullPlan = b.plan === true;
-          return json({ ok: true, todos: todos.map(({ plan, ...t }) => ({ ...t, ...(fullPlan ? { plan } : { planExcerpt: plan.slice(0, PLAN_EXCERPT) }), records: perTodo ? listRecords(db, t.id, perTodo) : [] })) });
+          return json({ ok: true, todos: todos.map(({ plan, ...t }) => ({ ...t, ...(fullPlan ? { plan } : { planExcerpt: plan.slice(0, PLAN_EXCERPT) }), records: perTodo ? listRecords(db, t.id, perTodo) : [] })) }, 200, req);
         },
       },
       // `task` for other apps (space.yaml `provides.task`): one task in full, by id in the body since a bus call
@@ -361,7 +433,7 @@ export function createServer(opts: ServerOptions) {
           const b = await body(req);
           const id = idOf(String(b.id ?? "")); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
-          return json(detail(todo));
+          return json(detail(todo), 200, req);
         },
       },
       // `plan` for other apps (space.yaml `provides.plan`): replace a task's plan, by id in the body.
@@ -428,14 +500,24 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => {
           const id = idOf(req.params.id); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
-          return json(detail(todo));
+          return json(detail(todo), 200, req);
         },
         PATCH: async (req) => {
           const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);
           const b = await body(req);
-          try { const todo = updateTodo(db, id, b, source(b.source)); return todo ? json({ ok: true, todo }) : fail("no such todo", 404); } catch (e) { return fail((e as Error).message); }
+          try { const todo = changeTodo(id, b, source(b.source)); return todo ? json({ ok: true, todo }) : fail("no such todo", 404); } catch (e) { return fail((e as Error).message); }
         },
         DELETE: (req) => { const id = idOf(req.params.id); return id && deleteTodo(db, id) ? json({ ok: true }) : fail("no such todo", 404); },
+      },
+      // The person's verdict on a todo in review: { verdict: "accept" | "reject", reason (required to reject), source? }.
+      // accept -> done; reject -> the reason as a record, back to doing, a `review-rejected` event. 409 when not in review.
+      "/api/todos/:id/review": {
+        POST: async (req) => {
+          const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);
+          const b = await body(req);
+          try { const todo = reviewTodo(db, id, b.verdict, b.reason, source(b.source)); return todo ? json({ ok: true, todo }) : fail("no such todo", 404); }
+          catch (e) { return refuse(e); }
+        },
       },
       "/api/todos/:id/records": {
         GET: (req) => {
@@ -519,7 +601,7 @@ export function createServer(opts: ServerOptions) {
           }
           const records = Object.fromEntries(todos.map((t) => [t.id, listRecords(db, t.id, 3)]));
           const ctx = chatContext(todos, { now: now(), timezone: tz(u.searchParams.get("timezone")), lang, records });
-          return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 });
+          return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 }, 200, req);
         },
       },
       // The drafts in a chat answer, cleaned, for the page to preview; adding them is POST /api/todos/bulk.
@@ -570,7 +652,7 @@ if (import.meta.main) {
   if (abandoned) log(`closed ${abandoned} run(s) left running by the last stop`);
   const { server } = createServer({
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
-    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, webTools: config.web,
+    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, webTools: config.web, autoReview: config.autoReview,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

@@ -30,6 +30,7 @@
       </nav>
       <div class="nav-label">归档</div>
       <nav class="views">
+        <button class="view" data-view="review"><svg class="ic" viewBox="0 0 24 24"><path d="M9 4.5h6M9 4.5a1.5 1.5 0 0 0-1.5 1.5v.5h9V6A1.5 1.5 0 0 0 15 4.5"/><path d="M7.5 5.5H6a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 6 20.5h12a1.5 1.5 0 0 0 1.5-1.5V7A1.5 1.5 0 0 0 18 5.5h-1.5"/><path d="m8.8 13.2 2.2 2.2 4.4-4.6"/></svg><span>验收</span><b id="n-review"></b></button>
         <button class="view" data-view="deferred"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10 9v6M14 9v6"/></svg><span>暂不处理</span><b id="n-deferred"></b></button>
         <button class="view" data-view="done"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span>已完成</span><b id="n-done"></b></button>
       </nav>
@@ -104,8 +105,17 @@
       <input id="d-extra" class="d-extra" placeholder="给这次执行的补充说明（可选）" autocomplete="off">
       <div class="grow"></div>
       <button class="btn small" id="d-doing">开始做</button>
+      <button class="btn small" id="d-review" title="做完了，交给你验收">提交验收</button>
+      <button class="btn small ok" id="d-accept" title="验收通过，标为完成">通过</button>
+      <button class="btn small" id="d-reject" title="验收不通过，写明原因后退回进行中">退回</button>
       <button class="btn small" id="d-defer">暂不处理</button>
       <button class="btn small danger" id="d-delete">删除</button>
+    </div>
+    <div class="reject-box" id="d-reject-box" hidden>
+      <label class="sub" for="d-reject-reason">退回原因</label>
+      <p class="record-hint">写入操作记录，任务回到进行中；AI 下次执行会看到这条原因。</p>
+      <textarea id="d-reject-reason" class="d-notes" rows="3" maxlength="4000" placeholder="哪里不满足验收，需要怎么改…"></textarea>
+      <div class="reject-bar"><div class="grow"></div><button class="btn small" id="d-reject-cancel">取消</button><button class="btn small danger" id="d-reject-send">确认退回</button></div>
     </div>
     <section class="plan" aria-labelledby="d-plan-label">
       <div class="plan-head">

@@ -6,8 +6,12 @@
  * answer).
  */
 
-type Status = "open" | "doing" | "deferred" | "done" | "dropped";
+type Status = "open" | "doing" | "review" | "deferred" | "done" | "dropped";
 type Todo = { id: number; title: string; notes: string; plan: string; planVersion: number; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
+/** A row of the list (`GET /api/todos?fields=list`): no plan, the notes cut to an excerpt; the detail has the rest. */
+type Item = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string };
+type Counts = { active: number; review: number; deferred: number; done: number };
+type ListAnswer = { todos: Item[]; tags: { tag: string; n: number }[]; projects: { project: string; n: number }[]; counts: Counts; total?: number; nextBefore?: string | null };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
@@ -60,7 +64,7 @@ const dateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
 const todayStr = () => dateStr(new Date());
 const addDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return dateStr(d); };
 const dayOf = (due: string) => due.slice(0, 10);
-const isLate = (t: Todo) => !!t.due && (t.due.length > 10 ? t.due < `${todayStr()}T${pad(new Date().getHours())}:${pad(new Date().getMinutes())}` : dayOf(t.due) < todayStr());
+const isLate = (t: { due: string | null }) => !!t.due && (t.due.length > 10 ? t.due < `${todayStr()}T${pad(new Date().getHours())}:${pad(new Date().getMinutes())}` : dayOf(t.due) < todayStr());
 const fmtDue = (due: string) => {
   const day = dayOf(due), today = todayStr();
   const time = due.length > 10 ? ` ${due.slice(11)}` : "";
@@ -108,14 +112,22 @@ applyTheme(savedTheme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "
 $("#theme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
 // ---- state
-type View = "today" | "upcoming" | "all" | "done" | "deferred";
-const VIEW_TITLE: Record<View, string> = { all: "全部", today: "今天", upcoming: "即将", deferred: "暂不处理", done: "已完成" };
-let view: View = "all";
+type View = "today" | "upcoming" | "all" | "review" | "done" | "deferred";
+const VIEW_TITLE: Record<View, string> = { all: "全部", today: "今天", upcoming: "即将", review: "验收", deferred: "暂不处理", done: "已完成" };
+const VIEWS = Object.keys(VIEW_TITLE) as View[];
+/** `/?view=review` opens that view (the panel card and the review notification link there). */
+const viewParam = new URLSearchParams(location.search).get("view") as View | null;
+let view: View = viewParam && VIEWS.includes(viewParam) ? viewParam : "all";
+/** The done list comes a page at a time, newest finished first. */
+const DONE_PAGE = 50;
+let doneCursor: string | null = null;
+let doneTotal = 0;
+let counts: Counts | null = null;
 let filterTag: string | null = null;
 let filterProject: string | null = null;
 let query = "";
-let todos: Todo[] = [];
-let active: Todo[] = [];
+let todos: Item[] = [];
+let active: Item[] = [];
 let tags: { tag: string; n: number }[] = [];
 let projects: { project: string; n: number }[] = [];
 /** Completions per day over the last week, from the panel card's trend (`/api/widget`); null when it could not be read. */
@@ -123,38 +135,74 @@ let trend: { t: string; v: number | null }[] | null = null;
 const els = { list: $("#list"), side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail") };
 $("#tz").textContent = TZ;
 
-async function load() {
-  const status = view === "done" ? "done" : view === "deferred" ? "deferred" : "active";
-  const q = new URLSearchParams({ status });
+/** Only the newest load draws: a slow answer for a view already left is dropped. */
+let loadSeq = 0;
+const statusOf = (v: View) => (v === "done" ? "done" : v === "deferred" ? "deferred" : v === "review" ? "review" : "active");
+const listQuery = (extra: Record<string, string> = {}) => {
+  const q = new URLSearchParams({ status: statusOf(view), fields: "list", ...extra });
   if (filterTag) q.set("tag", filterTag);
   if (filterProject) q.set("project", filterProject);
-  const widget = api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget")
-    .then((w) => w.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null);
-  const r = await api<{ todos: Todo[]; tags: typeof tags; projects: typeof projects }>(`/api/todos?${q}`);
-  todos = r.todos; tags = r.tags; projects = r.projects;
-  if (status === "active" && !filterTag && !filterProject) active = todos;
-  else { const a = await api<{ todos: Todo[] }>(`/api/todos?status=active`); active = a.todos; }
-  trend = await widget;
+  if (query) q.set("q", query);
+  if (view === "done") q.set("limit", String(DONE_PAGE));
+  return q;
+};
+async function load() {
+  const seq = ++loadSeq;
+  const status = statusOf(view);
+  const plain = status === "active" && !filterTag && !filterProject && !query;
+  // The list, the unfiltered active list (sidebar and cards) and the week's trend in parallel: one round trip, not two.
+  const [r, a, w] = await Promise.all([
+    api<ListAnswer>(`/api/todos?${listQuery()}`),
+    plain ? null : api<ListAnswer>("/api/todos?status=active&fields=list"),
+    api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget")
+      .then((x) => x.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null),
+  ]);
+  if (seq !== loadSeq) return;
+  todos = r.todos; tags = r.tags; projects = r.projects; counts = r.counts;
+  active = a ? a.todos : todos;
+  doneCursor = r.nextBefore ?? null; doneTotal = r.total ?? todos.length;
+  trend = w;
   renderSide();
   renderHead();
   renderKpis();
   renderTrend();
   renderList();
 }
+/** The next page of the done list, appended. */
+async function loadMore(btn: HTMLButtonElement) {
+  if (!doneCursor || view !== "done") return;
+  const seq = loadSeq;
+  btn.disabled = true; btn.textContent = "加载中…";
+  try {
+    const r = await api<ListAnswer>(`/api/todos?${listQuery({ before: doneCursor })}`);
+    if (seq !== loadSeq) return;
+    const seen = new Set(todos.map((t) => t.id));
+    todos = [...todos, ...r.todos.filter((t) => !seen.has(t.id))];
+    doneCursor = r.nextBefore ?? null; doneTotal = r.total ?? doneTotal;
+    renderList();
+  } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = "加载更多"; }
+}
+const setView = (v: View) => {
+  view = v;
+  history.replaceState(null, "", v === "all" ? location.pathname : `?view=${v}`);
+};
 
 // ---- sidebar
-const isToday = (t: Todo) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
+const isToday = (t: Item) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
 function renderSide() {
   const today = todayStr();
   const late = active.filter(isLate).length;
-  const counts = { today: active.filter(isToday).length, upcoming: active.filter((t) => t.due && dayOf(t.due) > today).length, all: active.length };
-  $("#n-today").textContent = counts.today ? String(counts.today) : "";
+  const n = { today: active.filter(isToday).length, upcoming: active.filter((t) => t.due && dayOf(t.due) > today).length, all: active.length };
+  $("#n-today").textContent = n.today ? String(n.today) : "";
   $("#n-today").classList.toggle("alert", late > 0);
   $("#n-today").title = late ? `${late} 项已过期` : "";
-  $("#n-upcoming").textContent = counts.upcoming ? String(counts.upcoming) : "";
-  $("#n-all").textContent = counts.all ? String(counts.all) : "";
-  $("#n-deferred").textContent = view === "deferred" ? String(todos.length) : "";
-  $("#n-done").textContent = view === "done" ? String(todos.length) : "";
+  $("#n-upcoming").textContent = n.upcoming ? String(n.upcoming) : "";
+  $("#n-all").textContent = n.all ? String(n.all) : "";
+  // Every stage's size, whatever view is open; finished work waiting for the person stands out.
+  $("#n-review").textContent = counts?.review ? String(counts.review) : "";
+  $("#n-review").classList.toggle("warn", !!counts?.review);
+  $("#n-deferred").textContent = counts?.deferred ? String(counts.deferred) : "";
+  $("#n-done").textContent = counts?.done ? String(counts.done) : "";
   document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view && !filterProject && !filterTag));
   const items = (list: { key: string; n: number }[], on: string | null, icon: keyof typeof ICON, label: (k: string) => string) =>
     list.length ? list.map((x) => `<button class="view${on === x.key ? " on" : ""}" data-key="${esc(x.key)}">${svg(icon)}<span>${esc(label(x.key))}</span><b>${x.n}</b></button>`).join("") : `<span class="none">无</span>`;
@@ -164,14 +212,14 @@ function renderSide() {
   $("#projects").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
   $("#tags").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
 }
-document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => { b.onclick = () => { view = b.dataset.view as View; closeDrawers(); void load(); }; });
+document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => { b.onclick = () => { setView(b.dataset.view as View); closeDrawers(); void load(); }; });
 
 // ---- header and toolbar
 const longDay = (d = new Date()) => `${d.getMonth() + 1}月${d.getDate()}日 周${"日一二三四五六"[d.getDay()]}`;
 function renderHead() {
-  const shown = visible().length;
+  const shown = view === "done" ? doneTotal : visible().length;
   $("#view-title").textContent = VIEW_TITLE[view];
-  $("#view-sub").textContent = `${longDay()} · ${shown} 项${view === "done" ? "已完成" : view === "deferred" ? "暂缓" : "待办"}`;
+  $("#view-sub").textContent = `${longDay()} · ${shown} 项${view === "done" ? "已完成" : view === "deferred" ? "暂缓" : view === "review" ? "待验收" : "待办"}`;
   $("#today-chip").textContent = longDay();
   document.title = `${VIEW_TITLE[view]} · AI 待办`;
   const f: string[] = [];
@@ -182,7 +230,7 @@ function renderHead() {
   $("#filters").querySelectorAll<HTMLElement>("[data-clear]").forEach((b) => {
     b.onclick = () => {
       const k = b.dataset.clear;
-      if (k === "project") filterProject = null; else if (k === "tag") filterTag = null; else { query = ""; searchBox.value = ""; renderHead(); renderList(); return; }
+      if (k === "project") filterProject = null; else if (k === "tag") filterTag = null; else { query = ""; searchBox.value = ""; }
       void load();
     };
   });
@@ -190,12 +238,20 @@ function renderHead() {
   $("#toolbar-note").textContent = late ? `${late} 项已过期` : `${active.length} 项未完成`;
 }
 
-// ---- search: the listed todos by title, notes, project and tags, in the page
+// ---- search: by title, notes, plan, project and tags, on the server (the list rows carry only a notes excerpt, the done list one page)
 const searchBox = $<HTMLInputElement>("#search");
-const matches = (t: Todo) => !query || [t.title, t.notes, t.plan ?? "", t.project ?? "", ...t.tags].some((s) => s.toLowerCase().includes(query.toLowerCase()));
-const visible = () => todos.filter(matches);
-searchBox.oninput = () => { query = searchBox.value.trim(); renderHead(); renderList(); };
-searchBox.onkeydown = (e) => { if (e.key === "Escape") { searchBox.value = ""; query = ""; renderHead(); renderList(); searchBox.blur(); } };
+const visible = () => todos;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+const search = (text: string, now = false) => {
+  clearTimeout(searchTimer);
+  if (text === query) return;
+  const go = () => { query = text; void load(); };
+  if (now) go(); else searchTimer = setTimeout(go, 250);
+};
+// While an IME composes, the box holds raw syllables: search when the word is committed.
+searchBox.oninput = (e) => { if (!(e as InputEvent).isComposing) search(searchBox.value.trim()); };
+searchBox.addEventListener("compositionend", () => search(searchBox.value.trim()));
+searchBox.onkeydown = (e) => { if (e.key === "Escape") { searchBox.value = ""; search("", true); searchBox.blur(); } else if (e.key === "Enter" && !e.isComposing) search(searchBox.value.trim(), true); };
 document.addEventListener("keydown", (e) => {
   const tag = (document.activeElement as HTMLElement | null)?.tagName;
   if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && els.detail.hidden && !(document.activeElement as HTMLElement | null)?.isContentEditable) { e.preventDefault(); searchBox.focus(); searchBox.select(); }
@@ -241,9 +297,9 @@ function renderTrend() {
 }
 
 // ---- the list
-type Group = { key: string; title: string; late?: boolean; items: Todo[] };
+type Group = { key: string; title: string; late?: boolean; items: Item[] };
 /** Subtasks by parent id, among the todos listed; a subtask whose parent is listed is drawn under it, not on its own. */
-let kids = new Map<number, Todo[]>();
+let kids = new Map<number, Item[]>();
 function nest() {
   const shown = visible();
   const ids = new Set(shown.map((t) => t.id));
@@ -257,6 +313,7 @@ function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
   const tops = nest();
   if (view === "deferred") return [{ key: "deferred", title: "暂不处理", items: tops }];
+  if (view === "review") return [{ key: "review", title: "待验收", items: tops }];
   if (view === "done") return [{ key: "done", title: "已完成", items: tops }];
   const g: Record<string, Group> = {
     doing: { key: "doing", title: "进行中", items: [] }, late: { key: "late", title: "已过期", late: true, items: [] }, today: { key: "today", title: "今天", items: [] },
@@ -273,12 +330,13 @@ function groups(): Group[] {
 function renderList() {
   const gs = groups();
   if (!gs.length) {
-    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
-    els.list.innerHTML = `<div class="empty"><b>${query ? "没有结果" : view === "done" ? "空" : "轻松"}</b>${hint}</div>`;
+    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : view === "review" ? "没有等待验收的任务。AI 或你做完一项后提交验收，会出现在这里。" : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
+    els.list.innerHTML = `<div class="empty"><b>${query ? "没有结果" : view === "done" || view === "review" ? "空" : "轻松"}</b>${hint}</div>`;
     return;
   }
   const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(t.id)?.length ?? 0), 0), 0);
-  const foot = view === "done" || view === "deferred" ? `<div class="list-foot"><b>共 ${total} 项</b></div>`
+  const foot = view === "done" ? `<div class="list-foot">${doneCursor ? `<button class="btn small" id="load-more">加载更多</button>` : ""}<b>已显示 ${total} / ${doneTotal} 项</b></div>`
+    : view === "deferred" || view === "review" ? `<div class="list-foot"><b>共 ${total} 项</b></div>`
     : `<div class="list-foot"><span class="legend" style="--c:var(--danger)">已过期，先处理或改日期</span><span class="legend" style="--c:var(--bar)">今天到期</span><b>共 ${total} 项</b></div>`;
   els.list.innerHTML = gs.map((g, i) => `
     <section class="group">
@@ -291,20 +349,29 @@ function renderList() {
     const id = Number(row.dataset.id);
     row.onclick = (e) => { if ((e.target as HTMLElement).closest("button, label, input")) return; void openDetail(id); };
     row.onkeydown = (e) => { if (e.key === "Enter" && e.target === row) void openDetail(id); };
-    $<HTMLInputElement>("input[type=checkbox]", row).onchange = (e) => void setStatus(id, (e.target as HTMLInputElement).checked ? "done" : "open");
-    row.querySelector<HTMLElement>("[data-op=run]")!.onclick = () => void openDetail(id, true);
-    row.querySelector<HTMLElement>("[data-op=edit]")!.onclick = () => void openDetail(id);
+    const inReview = row.classList.contains("review");
+    $<HTMLInputElement>("input[type=checkbox]", row).onchange = (e) => {
+      const on = (e.target as HTMLInputElement).checked;
+      void (inReview && on ? verdict(id, "accept") : setStatus(id, on ? "done" : "open"));
+    };
+    row.querySelector<HTMLElement>("[data-op=run]")?.addEventListener("click", () => void openDetail(id, true));
+    row.querySelector<HTMLElement>("[data-op=edit]")?.addEventListener("click", () => void openDetail(id));
+    row.querySelector<HTMLElement>("[data-op=accept]")?.addEventListener("click", () => void verdict(id, "accept"));
+    row.querySelector<HTMLElement>("[data-op=reject]")?.addEventListener("click", () => void openDetail(id).then(() => openReject()));
   });
+  const more = els.list.querySelector<HTMLButtonElement>("#load-more");
+  if (more) more.onclick = () => void loadMore(more);
 }
-function rowHtml(t: Todo, nested = false): string {
+function rowHtml(t: Item, nested = false): string {
   const line: string[] = [];
-  const open = t.status !== "done" && t.status !== "deferred";
+  const open = t.status !== "done" && t.status !== "deferred" && t.status !== "review";
   if (t.status === "doing") line.push(`<span style="color:var(--ai)">进行中</span>`);
+  if (t.status === "review") line.push(`<span style="color:var(--warn)">待验收</span>`);
   if (t.subtasks.total) line.push(`子任务 ${t.subtasks.done}/${t.subtasks.total}`);
   if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}`);
   if (t.tags.length) line.push(t.tags.map((tag) => `#${esc(tag)}`).join(" "));
   if (t.status === "done" && t.doneAt) line.push(`完成于 ${esc(fmtAgo(t.doneAt))}`);
-  if (t.notes) line.push(esc(t.notes.replace(/\s+/g, " ").slice(0, 80)));
+  if (t.notesExcerpt) line.push(esc(t.notesExcerpt.slice(0, 80)));
   const late = !!t.due && isLate(t) && open;
   const due = !t.due ? `<span class="dash">—</span>`
     : `<span class="pill${late ? " late" : open && dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`;
@@ -315,12 +382,23 @@ function rowHtml(t: Todo, nested = false): string {
     <div class="c-due">${due}</div>
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
-    <div class="ops"><button class="btn" data-op="run" title="交给 AI 执行"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button></div>
+    <div class="ops">${t.status === "review"
+      ? `<button class="btn ok" data-op="accept" title="验收通过，标为完成">通过</button><button class="btn" data-op="reject" title="验收不通过，写明原因后退回">退回</button>`
+      : `<button class="btn" data-op="run" title="交给 AI 执行"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button>`}</div>
   </div>`;
 }
 async function setStatus(id: number, status: Status) {
   try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
   catch (e) { toast((e as Error).message); }
+}
+/** The person's verdict on a task in review: accept closes it, reject sends it back to doing with the reason as a record. */
+async function verdict(id: number, v: "accept" | "reject", reason?: string): Promise<boolean> {
+  try {
+    await api(`/api/todos/${id}/review`, { method: "POST", body: JSON.stringify({ verdict: v, reason, source: "manual" }) });
+    toast(v === "accept" ? "验收通过，已完成" : "已退回，原因已写入操作记录");
+    if (cur?.id === id) await openDetail(id); else await load();
+    return true;
+  } catch (e) { toast((e as Error).message); await load(); return false; }
 }
 
 // ---- detail modal
@@ -332,6 +410,8 @@ const d = {
   project: $<HTMLInputElement>("#d-project"), tags: $<HTMLInputElement>("#d-tags"), notes: $<HTMLTextAreaElement>("#d-notes"), notesView: $("#d-notes-view"), extra: $<HTMLInputElement>("#d-extra"),
   records: $("#d-records"), recordContent: $<HTMLTextAreaElement>("#d-record-content"), recordAdd: $<HTMLButtonElement>("#d-record-add"), recordMore: $<HTMLButtonElement>("#d-record-more"),
   runs: $("#d-runs"), events: $("#d-events"), execute: $<HTMLButtonElement>("#d-execute"), doing: $<HTMLButtonElement>("#d-doing"), defer: $<HTMLButtonElement>("#d-defer"),
+  review: $<HTMLButtonElement>("#d-review"), accept: $<HTMLButtonElement>("#d-accept"), reject: $<HTMLButtonElement>("#d-reject"),
+  rejectBox: $("#d-reject-box"), rejectReason: $<HTMLTextAreaElement>("#d-reject-reason"), rejectSend: $<HTMLButtonElement>("#d-reject-send"),
   subsN: $("#d-subs-n"), subsList: $("#d-subs-list"), subAdd: $<HTMLInputElement>("#d-sub-add"), parent: $("#d-parent"),
 };
 let curSubs: Todo[] = [];
@@ -363,8 +443,11 @@ function fillDetail(t: Todo) {
   d.priority.value = String(t.priority); d.project.value = t.project ?? ""; d.tags.value = t.tags.join(", "); d.notes.value = t.notes;
   d.doing.textContent = t.status === "doing" ? "返回待办" : "开始做";
   d.defer.textContent = t.status === "deferred" ? "恢复待办" : "暂不处理";
-  d.defer.hidden = t.status === "done" || t.status === "dropped";
-  d.doing.hidden = t.status === "deferred";
+  d.defer.hidden = t.status === "done" || t.status === "dropped" || t.status === "review";
+  d.doing.hidden = t.status === "deferred" || t.status === "review";
+  d.review.hidden = t.status !== "open" && t.status !== "doing";
+  d.accept.hidden = d.reject.hidden = t.status !== "review";
+  d.rejectBox.hidden = true;
   showNotes(t.notes ? "view" : "edit");
 }
 /** Notes are Markdown: rendered until clicked, a textarea while editing, rendered again on blur. */
@@ -381,7 +464,7 @@ function closeDetail() {
   clearTimeout(saveTimer); void flushSave(); void flushPlan();
   liveAbort?.abort(); liveAbort = null;
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", view === "all" ? location.pathname : `?view=${view}`);
   void load();
 }
 $("#d-close").onclick = closeDetail;
@@ -557,6 +640,7 @@ d.project.onchange = () => scheduleSave({ project: d.project.value.trim() || nul
 d.tags.onchange = () => scheduleSave({ tags: d.tags.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
 d.done.onchange = async () => {
   if (!cur) return;
+  if (cur.status === "review" && d.done.checked) { await verdict(cur.id, "accept"); return; }
   const open = curSubs.filter((s) => s.status === "open" || s.status === "doing" || s.status === "deferred").length;
   await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) });
   toast(d.done.checked ? (open ? `已完成，连同 ${open} 个子任务` : "已完成") : "已重新打开");
@@ -626,6 +710,31 @@ d.defer.onclick = async () => {
     toast(restoring ? (isLate(r.todo) ? "已恢复待办，原截止日期已过，请调整日期" : "已恢复待办") : "已暂不处理，可从左侧列表恢复");
   } catch (e) { toast((e as Error).message); }
   finally { d.defer.disabled = false; }
+};
+d.review.onclick = async () => {
+  if (!cur) return;
+  const id = cur.id;
+  clearTimeout(saveTimer); await flushSave(); await flushPlan();
+  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) }); toast("已提交验收"); if (cur?.id === id) await openDetail(id); }
+  catch (e) { toast((e as Error).message); }
+};
+d.accept.onclick = () => { if (cur) void verdict(cur.id, "accept"); };
+/** Rejecting asks why: the reason is required and becomes an operation record. */
+function openReject() {
+  if (!cur || cur.status !== "review") return;
+  d.rejectBox.hidden = false;
+  d.rejectReason.focus();
+  d.rejectBox.scrollIntoView({ block: "nearest" });
+}
+d.reject.onclick = openReject;
+$("#d-reject-cancel").onclick = () => { d.rejectBox.hidden = true; };
+d.rejectSend.onclick = async () => {
+  if (!cur) return;
+  const reason = d.rejectReason.value.trim();
+  if (!reason) { toast("请写明退回原因"); d.rejectReason.focus(); return; }
+  d.rejectSend.disabled = true;
+  try { if (await verdict(cur.id, "reject", reason)) d.rejectReason.value = ""; }
+  finally { d.rejectSend.disabled = false; }
 };
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
 $("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
@@ -776,17 +885,19 @@ function renderRuns(runs: Run[]) {
 function runHtml(r: Run): string {
   const st = r.status === "running" ? "执行中" : r.status === "ok" ? "完成" : "失败";
   return `<div class="run${r.status === "running" ? " live" : ""}" data-run="${r.id}">
-    <div class="run-head"><span class="st ${r.status}">${st}</span><span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span style="color:var(--danger)">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button class="btn small" data-op="done">标记完成</button>` : ""}</div>
+    <div class="run-head"><span class="st ${r.status}">${st}</span><span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span style="color:var(--danger)">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button class="btn small" data-op="done">${cur?.status === "review" ? "验收通过" : "标记完成"}</button>` : ""}</div>
     <div class="md">${renderMd(r.output)}</div>
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { "plan-edited": "修改方案", "record-edited": "编辑操作记录", "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = { review: "提交验收", "review-rejected": "验收不通过", "plan-edited": "修改方案", "record-edited": "编辑操作记录", "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";
     const version = e.kind === "plan-edited" && e.data.version ? ` · v${esc(String(e.data.version))}` : e.kind === "record-edited" && e.data.revision ? ` · 记录 ${esc(String(e.data.recordId))} 修订 ${esc(String(e.data.revision))}` : "";
-    return `<div><span class="k">${label[e.kind] ?? esc(e.kind)}</span>${esc(fmtAgo(e.at))}${src}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}</div>`;
+    const kind = e.kind === "done" && e.data.verdict === "accept" ? "验收通过" : label[e.kind] ?? esc(e.kind);
+    const reason = e.kind === "review-rejected" && e.data.reason ? ` · ${esc(String(e.data.reason).slice(0, 80))}` : "";
+    return `<div><span class="k">${kind}</span>${esc(fmtAgo(e.at))}${src}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}${reason}</div>`;
   }).join("") || `<div>无</div>`;
 }
 
@@ -977,7 +1088,7 @@ async function mountChat() {
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
         const ul = appliedNotes.get(m.id);
-        const opName: Record<string, string> = { add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
+        const opName: Record<string, string> = { review: "提交验收", accept: "验收通过", reject: "退回", add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
         toast(`AI 改了清单：${ok}/${r.results.length} 项成功`);

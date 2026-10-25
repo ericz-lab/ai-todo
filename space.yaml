@@ -48,7 +48,7 @@ provides:
     http: { method: POST, path: /api/todos/bulk }
     timeout: 30s
   list:
-    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, deferred, done, dropped; default active), q?, tag?, project?, limit? (max 500), records? (per task, default 5), plan? (true for each plan's full text) }; answers { ok, todos [{ ...todo, planVersion, planExcerpt (first 300 characters; plan instead with plan true), records [newest first, each with revision and editedAt] }] }.
+    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, review, deferred, done, dropped; default active; review is finished work awaiting the person's acceptance), q?, tag?, project?, limit? (max 500), records? (per task, default 5), plan? (true for each plan's full text) }; answers { ok, todos [{ ...todo, planVersion, planExcerpt (first 300 characters; plan instead with plan true), records [newest first, each with revision and editedAt] }] }.
     http: { method: POST, path: /api/capabilities/list }
     timeout: 30s
   task:
@@ -99,6 +99,10 @@ provides:
           description: 往待办清单加一条任务,可带日期和时间。
           keywords: [待办, 任务, 提醒我, 记一下]
           inputs: { title: 标题, dueDate: 日期, dueTime: 时间, notes: 备注 }
+
+# A task entering review (验收) tells the person once (ai-space docs/notify.md); no channel configured means skipped.
+notify:
+  channels: [default]
 
 # The `todo` skill: ai-space links it into the workspace on every sync, so any agent session
 # started in the workspace can add, list and finish tasks through the CLI and the API.

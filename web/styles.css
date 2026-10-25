@@ -50,6 +50,7 @@ button { cursor: pointer; }
 .btn.primary:hover { background: var(--ink); opacity: .88; }
 .btn.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
 .btn.danger { color: var(--danger); }
+.btn.ok { color: var(--ok); }
 .btn:disabled { opacity: .5; cursor: default; transform: none; }
 .icon-btn { border: 1px solid var(--border); background: var(--surface); border-radius: 10px; width: 34px; height: 34px; color: var(--muted);
   display: inline-flex; align-items: center; justify-content: center; box-shadow: var(--shadow); }
@@ -85,6 +86,7 @@ button { cursor: pointer; }
 .view b { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); min-width: 22px; padding: 1px 7px; border-radius: 7px; text-align: center; background: var(--surface); border: 1px solid var(--border); }
 .view b:empty { display: none; }
 .view b.alert { background: var(--danger); color: #fff; border-color: transparent; }
+.view b.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .views .none { color: var(--faint); font-size: 13px; padding: 4px 10px; }
 .side-foot { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 2px; }
 
@@ -137,6 +139,7 @@ button { cursor: pointer; }
 .todo:hover { background: var(--hover); }
 .todo:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
 .todo.doing { box-shadow: inset 3px 0 0 var(--ai); }
+.todo.review { box-shadow: inset 3px 0 0 var(--warn); }
 .todo .t { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .todo .title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo.done .title { text-decoration: line-through; color: var(--muted); }
@@ -364,3 +367,9 @@ button { cursor: pointer; }
 .group-name { display: none; align-items: baseline; gap: 8px; padding: 12px 10px 2px; font-weight: 500; }
 .group-name b { font-weight: 400; color: var(--muted); font-size: 13px; }
 .group-name.late { color: var(--danger); }
+
+/* Rejecting a task in review: the reason box under the detail's actions. */
+.reject-box { margin: 10px 0 4px; padding: 10px 12px; border-radius: 12px; background: var(--warn-soft); display: flex; flex-direction: column; gap: 6px; }
+.reject-box .d-notes { background: var(--surface); }
+.reject-bar { display: flex; gap: 8px; align-items: center; }
+.list-foot #load-more { margin-right: auto; }

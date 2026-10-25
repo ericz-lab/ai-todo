@@ -4,7 +4,7 @@
  * edited, but every earlier text is kept as a version (never lose history).
  */
 import { Database } from "bun:sqlite";
-import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord, type RecordImage, type PlanVersion, type RecordRevision } from "./types.ts";
+import { PRIORITIES, SOURCES, STATUSES, type StatusCounts, type TodoSummary, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord, type RecordImage, type PlanVersion, type RecordRevision } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS todos (
@@ -93,11 +93,24 @@ export function openDb(path: string): Database {
   if (!recordCols.some(c => c.name === "revision")) db.exec("ALTER TABLE todo_records ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
   if (!recordCols.some(c => c.name === "edited_at")) db.exec("ALTER TABLE todo_records ADD COLUMN edited_at TEXT");
   db.exec(VERSIONS_SCHEMA);
+  // The done list pages newest first by when each was finished (keyset on done_at, id).
+  db.exec("CREATE INDEX IF NOT EXISTS todos_done ON todos(status, done_at DESC, id DESC)");
   return db;
 }
 
 /** Every read of todos goes through this, so each row carries its subtask counts. */
 const SELECT_TODOS = `SELECT todos.*,
+  (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id) AS sub_total,
+  (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id AND c.status = 'done') AS sub_done
+  FROM todos`;
+
+/** How many characters of the notes a list row carries (the page shows 80, whitespace collapsed). */
+export const NOTES_EXCERPT = 120;
+/** Read a little more than the excerpt so collapsing whitespace still leaves NOTES_EXCERPT characters. */
+const NOTES_EXCERPT_SCAN = 400;
+/** The page's list: the same rows without the plan and with the first characters of the notes only. */
+const SELECT_SUMMARIES = `SELECT todos.id, todos.title, substr(todos.notes, 1, ${NOTES_EXCERPT_SCAN}) AS notes_excerpt, todos.status, todos.priority, todos.due, todos.tags,
+  todos.project, todos.parent_id, todos.plan_version, todos.created_at, todos.updated_at, todos.done_at,
   (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id) AS sub_total,
   (SELECT COUNT(*) FROM todos c WHERE c.parent_id = todos.id AND c.status = 'done') AS sub_done
   FROM todos`;
@@ -120,6 +133,22 @@ const toTodo = (r: Row): Todo => ({
   parentId: (r.parent_id as number | null) ?? null,
   subtasks: { total: (r.sub_total as number | undefined) ?? 0, done: (r.sub_done as number | undefined) ?? 0 },
   position: r.position as number,
+  createdAt: r.created_at as string,
+  updatedAt: r.updated_at as string,
+  doneAt: (r.done_at as string | null) ?? null,
+});
+const toSummary = (r: Row): TodoSummary => ({
+  id: r.id as number,
+  title: r.title as string,
+  notesExcerpt: String(r.notes_excerpt ?? "").replace(/\s+/g, " ").trim().slice(0, NOTES_EXCERPT),
+  planVersion: (r.plan_version as number | undefined) ?? 0,
+  status: r.status as Status,
+  priority: r.priority as Priority,
+  due: (r.due as string | null) ?? null,
+  tags: JSON.parse(r.tags as string) as string[],
+  project: (r.project as string | null) ?? null,
+  parentId: (r.parent_id as number | null) ?? null,
+  subtasks: { total: (r.sub_total as number | undefined) ?? 0, done: (r.sub_done as number | undefined) ?? 0 },
   createdAt: r.created_at as string,
   updatedAt: r.updated_at as string,
   doneAt: (r.done_at as string | null) ?? null,
@@ -216,11 +245,24 @@ export function cleanPatch(v: unknown): Patch {
 
 // ---- todos
 
-export type ListFilter = { status?: Status | "active" | "all"; q?: string; tag?: string; project?: string; limit?: number };
+/**
+ * `before` pages the done list: the `nextBefore` of the previous page, `<doneAt>|<id>` of its last row
+ * (only with status done, which is ordered by done_at then id, newest first).
+ */
+export type ListFilter = { status?: Status | "active" | "all"; q?: string; tag?: string; project?: string; limit?: number; before?: string };
 
 const ACTIVE_WHERE = "status IN ('open','doing') AND NOT EXISTS (SELECT 1 FROM todos p WHERE p.id = todos.parent_id AND p.status = 'deferred')";
 
-export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
+/** A done-list cursor `<doneAt>|<id>`; an empty doneAt is the zone of rows finished without a time. */
+export function cleanCursor(v: unknown): { doneAt: string | null; id: number } {
+  const m = /^([^|]*)\|(\d+)$/.exec(String(v ?? ""));
+  if (!m || (m[1] && Number.isNaN(Date.parse(m[1]))) || !Number(m[2])) throw new Error("before must be <doneAt>|<id> from nextBefore");
+  return { doneAt: m[1] || null, id: Number(m[2]) };
+}
+/** The cursor of a done row, for the page after it. */
+export const cursorOf = (t: { doneAt: string | null; id: number }) => `${t.doneAt ?? ""}|${t.id}`;
+
+function whereOf(f: ListFilter): { sql: string; args: (string | number)[]; status: string } {
   const where: string[] = [];
   const args: (string | number)[] = [];
   const status = f.status ?? "active";
@@ -229,13 +271,54 @@ export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
   if (f.q) { where.push("(title LIKE ? OR notes LIKE ? OR plan LIKE ? OR tags LIKE ? OR project LIKE ?)"); const like = `%${f.q}%`; args.push(like, like, like, like, like); }
   if (f.tag) { where.push("tags LIKE ?"); args.push(`%${JSON.stringify(f.tag)}%`); }
   if (f.project) { where.push("project = ?"); args.push(f.project); }
-  const sql = `${SELECT_TODOS} ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'open' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+  return { sql: where.length ? `WHERE ${where.join(" AND ")}` : "", args, status };
+}
+
+function queryTodos(db: Database, f: ListFilter, select: string): Row[] {
+  const w = whereOf(f);
+  const args = [...w.args];
+  let where = w.sql;
+  let order: string;
+  if (w.status === "done") {
+    // Newest finished first; NULL done_at (never expected) sorts last and is reachable by its own cursor zone.
+    if (f.before !== undefined) {
+      const c = cleanCursor(f.before);
+      const cond = c.doneAt === null ? "(done_at IS NULL AND id < ?)" : "(done_at < ? OR (done_at = ? AND id < ?) OR done_at IS NULL)";
+      where = `${where ? `${where} AND` : "WHERE"} ${cond}`;
+      if (c.doneAt === null) args.push(c.id); else args.push(c.doneAt, c.doneAt, c.id);
+    }
+    order = "ORDER BY done_at DESC, id DESC";
+  } else {
+    if (f.before !== undefined) throw new Error("before pages the done list only (status=done)");
+    order = `ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'open' THEN 2 WHEN 'done' THEN 3 ELSE 4 END,
       CASE WHEN status IN ('done','dropped') THEN updated_at END DESC,
-      CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, priority DESC, position, id
-    LIMIT ?`;
+      CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, priority DESC, position, id`;
+  }
   args.push(Math.min(Math.max(f.limit ?? 500, 1), 2000));
-  return (db.query(sql).all(...args) as Row[]).map(toTodo);
+  return db.query(`${select} ${where} ${order} LIMIT ?`).all(...args) as Row[];
+}
+
+export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
+  return queryTodos(db, f, SELECT_TODOS).map(toTodo);
+}
+
+/** The lean rows of the page's list: no plan, notes cut to NOTES_EXCERPT characters. */
+export function listTodoSummaries(db: Database, f: ListFilter = {}): TodoSummary[] {
+  return queryTodos(db, f, SELECT_SUMMARIES).map(toSummary);
+}
+
+/** How many todos match a filter (the cursor and the limit aside), for "N of M" on a paged list. */
+export function countTodos(db: Database, f: ListFilter = {}): number {
+  const w = whereOf(f);
+  return (db.query(`SELECT COUNT(*) AS n FROM todos ${w.sql}`).get(...w.args) as { n: number }).n;
+}
+
+/** The size of each stage, in one pass: the sidebar shows them whatever view is open. */
+export function statusCounts(db: Database): StatusCounts {
+  const rows = db.query("SELECT status, COUNT(*) AS n FROM todos GROUP BY status").all() as { status: string; n: number }[];
+  const by = Object.fromEntries(rows.map((r) => [r.status, r.n]));
+  const active = (db.query(`SELECT COUNT(*) AS n FROM todos WHERE ${ACTIVE_WHERE}`).get() as { n: number }).n;
+  return { active, review: by.review ?? 0, deferred: by.deferred ?? 0, done: by.done ?? 0 };
 }
 
 export function getTodo(db: Database, id: number): Todo | null {
@@ -246,7 +329,7 @@ export function getTodo(db: Database, id: number): Todo | null {
 /** The subtasks of a todo, every status: open ones first, then in the order they were made. */
 export function listSubtasks(db: Database, parentId: number): Todo[] {
   return (db.query(`${SELECT_TODOS} WHERE parent_id = ?
-    ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'open' THEN 1 WHEN 'done' THEN 2 ELSE 3 END, position, id`).all(parentId) as Row[]).map(toTodo);
+    ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'review' THEN 1 WHEN 'open' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, position, id`).all(parentId) as Row[]).map(toTodo);
 }
 
 /** A todo may become a subtask of `parentId` when that todo exists, is not itself a subtask, and is not the todo; a todo with subtasks stays on top. */
@@ -445,7 +528,8 @@ function mergeEdit(db: Database, id: number, source: Source, changed: Record<str
   return true;
 }
 
-export function updateTodo(db: Database, id: number, patch: Patch, source: Source = "manual"): Todo | null {
+/** `origin` adds to the event's data (the run that sent a todo to review, say). */
+export function updateTodo(db: Database, id: number, patch: Patch, source: Source = "manual", origin: Record<string, unknown> = {}): Todo | null {
   const before = getTodo(db, id);
   if (!before) return null;
   const p = cleanPatch(patch);
@@ -463,13 +547,45 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
     db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, parent_id = ?, updated_at = ?, done_at = ? WHERE id = ?`)
       .run(next.title, next.notes, next.status, next.priority, next.due, JSON.stringify(next.tags), next.project, next.parentId, t, doneAt, id);
     const kind = "status" in changed ? String(next.status) : "edited";
-    if (kind !== "edited" || !mergeEdit(db, id, source, changed, t)) addEvent(db, id, kind, { source, changed }, t);
+    if (kind !== "edited" || !mergeEdit(db, id, source, changed, t)) addEvent(db, id, kind, { source, changed, ...origin }, t);
     // Finishing a todo finishes its steps still open; each gets its own history line.
     if (changed.status && next.status === "done") {
-      for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing" || sub.status === "deferred") updateTodo(db, sub.id, { status: "done" }, source);
+      for (const sub of listSubtasks(db, id)) if (sub.status === "open" || sub.status === "doing" || sub.status === "review" || sub.status === "deferred") updateTodo(db, sub.id, { status: "done" }, source);
     }
   })();
   return getTodo(db, id);
+}
+
+/** The prefix of the record a rejection appends; the reason follows it. */
+export const REJECT_PREFIX = "验收不通过：";
+
+/**
+ * The person's verdict on a todo awaiting acceptance (status review), in one transaction.
+ * accept: done (its unfinished subtasks with it), the `done` event as for any completion.
+ * reject: the reason is required; it is appended as an operation record (so the next execution and the
+ * chat see it), the todo goes back to doing, and a `review-rejected { source, reason, recordId }` event
+ * keeps the round. A todo not in review is a ConflictError carrying it. Null when there is no such todo.
+ */
+export function reviewTodo(db: Database, id: number, verdict: unknown, reason: unknown, source: Source = "manual"): Todo | null {
+  if (verdict !== "accept" && verdict !== "reject") throw new Error("verdict must be accept or reject");
+  const why = verdict === "reject" ? cleanReason(reason) : "";
+  return db.transaction(() => {
+    const before = getTodo(db, id);
+    if (!before) return null;
+    if (before.status !== "review") throw new ConflictError(`#${id} is not awaiting acceptance (status ${before.status})`, { todo: before });
+    if (verdict === "accept") return updateTodo(db, id, { status: "done" }, source, { verdict: "accept" });
+    const record = appendRecord(db, id, `${REJECT_PREFIX}${why}`, source)!;
+    updateTodo(db, id, { status: "doing" }, source, { verdict: "reject" });
+    addEvent(db, id, "review-rejected", { source, reason: why, recordId: record.id });
+    return getTodo(db, id);
+  })();
+}
+/** A rejection must say why; the reason becomes a record, so the same limits apply. */
+export function cleanReason(v: unknown): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (!s) throw new Error("a rejection needs a reason");
+  if (s.length > 4000) throw new Error("reason exceeds 4000 characters");
+  return s;
 }
 
 /** Deleting a todo deletes its subtasks with it; every one leaves a `deleted` line. */

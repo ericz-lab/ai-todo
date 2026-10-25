@@ -38,7 +38,7 @@ const space = Bun.serve({
 let base = "";
 let stop = () => {};
 beforeAll(() => {
-  const { server } = createServer({ db: openDb(":memory:"), port: 0, web: false, publicBase: "https://todo.test", spaceApiUrl: `http://127.0.0.1:${space.port}`, spaceAppToken: "sat_todo", now: () => new Date("2026-09-22T02:30:00Z") });
+  const { server } = createServer({ db: openDb(":memory:"), port: 0, web: false, publicBase: "https://todo.test", spaceApiUrl: `http://127.0.0.1:${space.port}`, spaceAppToken: "sat_todo", autoReview: false, now: () => new Date("2026-09-22T02:30:00Z") });
   base = `http://127.0.0.1:${server.port}`;
   stop = () => server.stop(true);
 });

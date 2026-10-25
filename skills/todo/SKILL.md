@@ -41,7 +41,10 @@ Adjust these defaults to the discovered app path and port. For a remote service,
 | --- | --- |
 | "记一下 / 加个待办 / 帮我记着 …" | `todo parse "<their words>"` shows what the model makes of it (dates resolved, tags, priority); then `todo add "<title>" [--due …] [--priority …] [--tags …] [--project …]` for each draft. Read the drafts back to the person with the dates you used. Without the model (parse fails), add the plain titles and say the dates were not set. |
 | "今天要做什么 / 明天要干嘛 / 安排一下" | `todo list`, then order by due, priority and what is `doing`; answer with ids, short. |
-| "XX 完成了 / 做完了 3" | `todo done <id>`; find the id with `todo list --q <text>` when they name the task. |
+| "XX 完成了 / 做完了 3" | `todo done <id>`; find the id with `todo list --q <text>` when they name the task. When the person says it, it is done; when you finished the work, hand it over instead (next row). |
+| You (an agent) finished a task that was `doing` | `todo review <id>` (验收), not `done`: the person accepts or rejects it. Append a record with what was done and verified first. |
+| "验收通过 / 可以了"（task in review） | `todo accept <id>`: done, with its unfinished subtasks. `todo list --review` lists what waits for acceptance. |
+| "退回 / 验收不通过，因为 …" | `todo reject <id> "<reason>"`: the reason is required; it is kept as a record (`验收不通过：…`) and the task goes back to doing. Read it (`todo show <id>`) before working on the task again. |
 | "开始做 / 推迟到周五 / 改成高优先级" | `todo start <id>` or `curl -sS -X PATCH "$TODO_URL/api/todos/<id>" -H 'content-type: application/json' -d '{"due":"YYYY-MM-DD"}'` on the selected host (fields: title, notes, status, priority, due, tags, project; source `cli`). |
 | "让 AI 去做 / 帮我查一下这条" | `todo execute <id> [--extra "…"]`; it streams the model's result and stores it under the task. Minutes and a model call; say so before running unless they asked for it. |
 | "记录进展 / 回写验收结果 / 追加操作记录" | `todo record <id> "<content>"`; preserve notes and earlier entries. Include evidence, what was verified and what remains unverified. Use `todo records <id> [--before id]` to read older entries. |
@@ -55,7 +58,9 @@ Dates are the person's local wall clock, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; res
 ## API, for anything the CLI lacks
 
 ```
-GET    /api/todos?status=active|deferred|done|all&q=&tag=&project=    { todos, tags, projects }
+GET    /api/todos?status=active|review|deferred|done|all&q=&tag=&project=    { todos, tags, projects, counts }
+       &fields=list  lean rows (notesExcerpt, no plan);  &limit=50&before=<nextBefore>  pages the done list -> { total, nextBefore }
+POST   /api/todos/:id/review { verdict: "accept" | "reject", reason (required to reject), source: "cli" }   (409 when not in review)
 POST   /api/todos            { title, notes?, plan?, due?, priority?, tags?, project?, parentId?, source: "cli" }
 POST   /api/todos/bulk       { drafts: [...], parentId?, source: "cli" }   parentId: every draft becomes its subtask
 GET    /api/todos/:id        { todo, parent, subtasks, events, runs, records, recordsNextBefore }
@@ -75,5 +80,7 @@ POST   /api/todos/:id/execute  { extra? } -> text/event-stream
 Answers are `{ ok: true, ... }` or `{ ok: false, error }`.
 
 Operation records are appended, support Markdown, and allow 1–20,000 characters. A record may be edited to correct a fact; every earlier revision is kept. A changed conclusion is a new entry. After an uncertain POST response, inspect recent records before retrying to avoid duplicates. Plans allow up to 50,000 characters; every version is kept.
+
+Review (验收): a task in `review` is finished work waiting for the person; it is not on the active list or a daily plan. A successful `todo execute` of an open or doing task moves it there by itself.
 
 For 暂不处理, use `todo defer <id>`; use `todo list --deferred` to find deferred tasks and `todo reopen <id>` to restore. Dates, records and history remain intact. A deferred parent hides its active children without changing their statuses; daily plans exclude these tasks unless requested.

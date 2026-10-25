@@ -1,6 +1,10 @@
 /** Data model of ai-todo. Dates are local wall-clock strings: `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, no zone. */
 
-export type Status = "open" | "doing" | "deferred" | "done" | "dropped";
+/**
+ * `review` (验收): the work is finished and waits for the person to accept it (then done) or reject it
+ * with a reason (back to doing). Like `deferred` it is a stage of its own, not part of the active list.
+ */
+export type Status = "open" | "doing" | "review" | "deferred" | "done" | "dropped";
 /** 0 none, 1 low, 2 medium, 3 high. */
 export type Priority = 0 | 1 | 2 | 3;
 export type Source = "manual" | "ai" | "chat" | "cli";
@@ -28,6 +32,15 @@ export type Todo = {
   updatedAt: string;
   doneAt: string | null;
 };
+
+/**
+ * A todo as the page's list shows it (`GET /api/todos?fields=list`): no plan, no full notes, only
+ * the first characters of the notes; the detail (`GET /api/todos/:id`) has the rest.
+ */
+export type TodoSummary = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string };
+
+/** How many todos each stage holds; `active` is what the active list shows (open and doing, not under a deferred parent). */
+export type StatusCounts = { active: number; review: number; deferred: number; done: number };
 
 /** What the AI (or the person) proposes before it becomes a todo. */
 export type Draft = {
@@ -80,12 +93,13 @@ export type Run = {
 /** An operation the chat assistant asks the app to perform. */
 export type Action =
   | ({ op: "add" } & Draft)
-  | { op: "done" | "reopen" | "delete" | "start" | "defer"; id: number }
+  | { op: "done" | "reopen" | "delete" | "start" | "defer" | "review" | "accept"; id: number }
+  | { op: "reject"; id: number; reason: string }
   | ({ op: "update"; id: number; plan?: string } & Patch)
   | { op: "record"; id: number; content: string }
   | { op: "plan"; id: number; content: string; expectedVersion?: number }
   | { op: "edit-record"; id: number; recordId: number; content: string };
 
-export const STATUSES: Status[] = ["open", "doing", "deferred", "done", "dropped"];
+export const STATUSES: Status[] = ["open", "doing", "review", "deferred", "done", "dropped"];
 export const PRIORITIES: Priority[] = [0, 1, 2, 3];
 export const SOURCES: Source[] = ["manual", "ai", "chat", "cli"];

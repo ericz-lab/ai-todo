@@ -12,6 +12,8 @@ export const config = {
   spaceAppToken: env("SPACE_APP_TOKEN"),
   /** Let an execution search the web (0 = off): WebSearch and WebFetch. */
   web: env("TODO_WEB", "1") !== "0",
+  /** A successful execution sends an open or doing todo to review (验收); 0 keeps its status. */
+  autoReview: env("TODO_AUTO_REVIEW", "1") !== "0",
   /** Wall-clock cap of one execution, seconds. */
   executeTimeoutSec: num("TODO_EXECUTE_TIMEOUT", 600),
   /** Language of the page and of the model's answers. */

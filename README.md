@@ -12,7 +12,7 @@ One AI box at the top, three uses:
 
 On a task, `✦ 执行` (or the button in its detail) hands it to the model with `WebSearch` and `WebFetch`; the answer streams in, is kept as a run under the task, and survives closing the page.
 
-Views: 今天 (doing, overdue, due today), 即将, 全部, 暂不处理, 已完成; filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
+Views: 今天 (doing, overdue, due today), 即将, 全部, 验收, 暂不处理, 已完成 (50 at a time, newest finished first, **加载更多** for the rest; search runs on the server); filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
 
 Subtasks: a task can have steps, one level deep. They sit indented under their task in the list, which shows `☑ done/total`; each is a full todo (due, execute, history). Add them in the detail (they keep the task's project and tags), from the chat ("拆成三步"), or with `--parent`. Finishing a task finishes its open steps; deleting it deletes them. `︿` folds the AI box.
 
@@ -70,11 +70,12 @@ Without `SPACE_API_URL` and `SPACE_APP_TOKEN` the list works and every AI featur
 CLI over the running service (also what the `planner` agent uses):
 
 ```bash
-bun src/cli.ts list [--all|--done|--deferred] [--q text] [--tag t] [--project p]
+bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p]
 bun src/cli.ts add "订机票" --due 2026-09-26 --priority 2 --tags 出差
 bun src/cli.ts add "订酒店" --parent 3                 # a subtask of #3
 bun src/cli.ts move 5 3 | move 5 none                 # make #5 a subtask of #3, or take it out
 bun src/cli.ts done 3 | start 3 | reopen 3 | rm 3 | show 3
+bun src/cli.ts review 3 | accept 3 | reject 3 "缺少截图"   # 验收: hand over, accept, send back with a reason
 bun src/cli.ts parse "明天下午三点前发周报"      # drafts, not added
 bun src/cli.ts execute 3 --extra "只要一页"
 ```
@@ -86,6 +87,10 @@ A bare repository with `deploy/post-receive` on the host (`git push seoul main`)
 This is an [ai-space](https://github.com/ericz-lab/ai-space) app; the contract is its `docs/app-spec.md`.
 
 All AI features inherit the default model selected in ai-space Settings. Legacy `TODO_MODEL` values are ignored.
+
+## Review (验收)
+
+Finished work waits for the person instead of closing itself. A successful **AI 执行** of an open or doing task moves it to **验收** (`TODO_AUTO_REVIEW=0` keeps the status); an agent working from the terminal ends with `review <id>`, the chat with `op: review`, the detail with **提交验收**. The sidebar's **验收** view (`/?view=review`, its count always shown) lists them; the row and the detail offer **通过** (done, with its unfinished subtasks) and **退回**, which asks for a reason: the reason becomes an operation record (`验收不通过：…`, so the next execution and the chat see it), the task goes back to doing and the history keeps a `review-rejected` line. Tasks in review leave the active list, Today and AI daily plans; the chat sees them under "Awaiting your acceptance", the panel card says `待验收 N` and links the view. Entering review sends one notification through ai-space (`notify` in `space.yaml`, ai-space `docs/notify.md`); without a configured channel it is recorded and skipped. API: `POST /api/todos/:id/review { verdict: "accept" | "reject", reason? }` (409 when the task is not in review).
 
 ## Deferred tasks
 

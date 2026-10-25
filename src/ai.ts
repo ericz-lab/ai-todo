@@ -3,7 +3,7 @@
  * into drafts, execute one todo, the chat's context) and the readers of what the model sends
  * back (a JSON array of drafts, a fenced `todo-actions` block in a chat answer).
  */
-import { cleanDraft, cleanPatch, cleanPlan, cleanRecord } from "./db.ts";
+import { cleanDraft, cleanPatch, cleanPlan, cleanReason, cleanRecord } from "./db.ts";
 import type { Action, Draft, Todo, OperationRecord } from "./types.ts";
 
 // ---- the model service (docs/model.md)
@@ -157,6 +157,7 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
   if (todo.plan) lines.push("", `Plan (v${todo.planVersion}, the current design; follow it unless told otherwise):`, clip(todo.plan, PLAN_PROMPT_CHARS));
   if (opts.parent) lines.push("", `This is one step of the larger task: ${opts.parent.title}${opts.parent.notes ? `\nIts notes: ${opts.parent.notes.slice(0, 1000)}` : ""}${opts.parent.plan ? `\nIts plan (excerpt): ${clip(opts.parent.plan, 1000)}` : ""}`);
   if (opts.subtasks?.length) lines.push("", "Its steps (subtasks):", ...opts.subtasks.map((s) => `- [${s.status === "done" ? "x" : " "}] ${s.title}`));
+  if (todo.status === "review") lines.push("", "This task is awaiting the person's acceptance; a rejection reason may be in the records below.");
   if (opts.records?.length) lines.push("", "Recent operation records (newest first; older entries may be omitted):", ...opts.records.map((r) => `[${r.createdAt}, ${r.source}] ${r.content.slice(0, 4000)}`));
   if (opts.extra?.trim()) lines.push("", "Instructions for this run:", opts.extra.trim());
   return lines.join("\n");
@@ -184,6 +185,7 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
    {"op":"add","title":"…","due":…,"priority":…,"tags":[…],"project":…,"notes":"…","parentId":N}  (same fields as a draft; parentId makes it a subtask)
    {"op":"update","id":N, …any of title, notes, due, priority, tags, project, parentId…}  (parentId null takes a subtask out of its parent)
    {"op":"defer","id":N}   {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
+   {"op":"review","id":N}  (work finished: hand it to the person for acceptance, 验收)   {"op":"accept","id":N}   {"op":"reject","id":N,"reason":"…"}
    {"op":"record","id":N,"content":"…"}  (append progress, actions taken or acceptance results; never replace notes for these)
    {"op":"plan","id":N,"content":"…","expectedVersion":V}  (replace the task's plan (方案) with this whole Markdown text; V is the version the list shows, so a plan changed meanwhile is not overwritten)
    {"op":"edit-record","id":N,"recordId":R,"content":"…"}  (rewrite operation record R of task N)
@@ -191,12 +193,13 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
    - The list shows only the start of a plan; never rewrite a plan you have not seen in full (ask the person, or leave it), and keep what the person wrote in it.
    - Operation records are appended. Edit one only to correct a fact in it (a wrong id, a typo, a wrong number), never to change what was concluded at the time: append a new record for that. The earlier text is kept. Distinguish verified facts from unverified claims.
    - "暂不处理" uses defer; "恢复待办" uses reopen. Deferred tasks and unfinished children of deferred parents are excluded from daily plans unless explicitly requested. Deferring keeps dates and child statuses; reopening a parent makes its active children visible again.
+   - Review (验收): finished work waits for the person. When you (or another agent) finished a task that was being done, use review, not done; only the person closes it. "通过/验收通过" on a task awaiting acceptance is accept (done does the same); "退回/不通过" is reject with the person's reason, which is kept as a record and sends the task back to doing. Reject only with a reason the person gave.
    - Only ids from the list. Never delete without being asked; prefer done or update.
    - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its unfinished subtasks, including deferred ones; deleting it deletes them.
    - Splitting a task ("拆成三步", "拆分"): add each part as a subtask with "parentId" set to the original's id, keeping its project and tags; leave the original open.
    - When the request is ambiguous (which task? which day?), ask instead and put no block.
 
-3. A QUESTION OR A PLAN ("今天先做什么", "这周压着什么", "帮我安排一下"). Answer from the list: short, concrete, ids or titles, ordered. No block.
+3. A QUESTION OR A PLAN ("今天先做什么", "这周压着什么", "帮我安排一下"). Answer from the list: short, concrete, ids or titles, ordered. Tasks awaiting acceptance are not work to do: list them separately as 需要你验收. No block.
 
 Never put both blocks in one answer. Dates outside a block are written as the person would say them.`;
 
@@ -218,6 +221,7 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
   const deferred = todos.filter((t) => t.status === "deferred" || ((t.status === "open" || t.status === "doing") && t.parentId !== null && deferredIds.has(t.parentId)));
   const hiddenIds = new Set(deferred.map((t) => t.id));
   const active = todos.filter((t) => (t.status === "open" || t.status === "doing") && !hiddenIds.has(t.id));
+  const review = todos.filter((t) => t.status === "review");
   const done = todos.filter((t) => t.status === "done").slice(0, 15);
   // Subtasks follow their parent, indented; one whose parent is not open says whose step it is.
   const openIds = new Set(active.map((t) => t.id));
@@ -231,6 +235,9 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     "",
     `Open tasks (${active.length}):`,
     tree.length ? tree.join("\n") : "- (none)",
+    "",
+    `Awaiting your acceptance (${review.length}) — finished work the person accepts or rejects, not work to do:`,
+    review.length ? review.map((t) => line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : "")).join("\n") : "- (none)",
     "",
     `Deferred tasks — exclude from daily plans (${deferred.length}):`,
     deferred.length ? deferred.map((t) => line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : "")).join("\n") : "- (none)",
@@ -292,7 +299,8 @@ export function cleanAction(v: unknown): Action {
       const { op: _o, id: _i, plan, ...rest } = a;
       return { op, id: id(), ...cleanPatch(rest), ...(plan !== undefined ? { plan: cleanPlan(plan) } : {}) };
     }
-    case "done": case "start": case "reopen": case "delete": case "defer": return { op, id: id() };
+    case "done": case "start": case "reopen": case "delete": case "defer": case "review": case "accept": return { op, id: id() };
+    case "reject": return { op, id: id(), reason: cleanReason(a.reason) };
     default: throw new Error(`unknown op ${op}`);
   }
 }

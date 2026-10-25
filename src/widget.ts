@@ -2,10 +2,11 @@
  * The panel card (`GET /api/widget`, ai-space docs/app-spec.md "Blocks: a state card instead of a
  * list"): the list as `items` for a panel without blocks, and `blocks` for a state card. The hero
  * counts what is due by today, overdue ones coloring it; the rows are the next tasks and the
- * completions of the last seven days. Every number is counted from the store, nothing estimated.
+ * completions of the last seven days; tasks awaiting acceptance (验收) get a row of their own on top and
+ * a mention in the caption. Every number is counted from the store, nothing estimated.
  */
 import type { Database } from "bun:sqlite";
-import { listTodos } from "./db.ts";
+import { countTodos, listTodos } from "./db.ts";
 import type { Todo } from "./types.ts";
 
 type Text = { en: string; zh: string };
@@ -118,6 +119,10 @@ export function widgetPayload(db: Database, opts: { now: Date; timezone: string;
     const d = dueText(nextDue, clock);
     caption = { en: `${open} open · next due ${d.en}`, zh: `未完成 ${open} · 下个截止 ${d.zh}` };
   } else caption = { en: `${open} open`, zh: `未完成 ${open}` };
+  // Finished work waiting for the person is not on the active list; the card still says so.
+  const review = countTodos(db, { status: "review" });
+  if (review) caption = { en: `${caption.en} · ${review} to accept`, zh: `${caption.zh} · 待验收 ${review}` };
+  const reviewRow: Block[] = review ? [{ type: "status", label: "待验收", value: { en: `${review} awaiting acceptance`, zh: `${review} 项等你验收` }, tone: "warning", url: "/?view=review" }] : [];
 
   const hero: Block = {
     type: "metric",
@@ -140,8 +145,8 @@ export function widgetPayload(db: Database, opts: { now: Date; timezone: string;
 
   const rows = active.map((t) => taskRow(t, clock));
   const blocks: Block[] = open
-    ? [hero, ...rows.slice(0, ROWS_BEFORE_TREND), trend, ...rows.slice(ROWS_BEFORE_TREND, ROWS_BEFORE_TREND + ROWS_AFTER_TREND)]
-    : done ? [hero, trend] : [hero];
+    ? [hero, ...reviewRow, ...rows.slice(0, ROWS_BEFORE_TREND), trend, ...rows.slice(ROWS_BEFORE_TREND, ROWS_BEFORE_TREND + ROWS_AFTER_TREND)]
+    : done ? [hero, ...reviewRow, trend] : [hero, ...reviewRow];
 
   return { ok: true, items, asOf: now.toISOString(), staleAfter: STALE_AFTER_S, blocks };
 }
