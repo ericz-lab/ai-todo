@@ -1,9 +1,10 @@
 /**
- * SQLite store: todos, their append-only history and their AI runs. Every write logs an event,
- * so a todo can always answer "where from, when".
+ * SQLite store: todos, their plans and records, their append-only history and their AI runs. Every
+ * write logs an event, so a todo can always answer "where from, when". Plans and records may be
+ * edited, but every earlier text is kept as a version (never lose history).
  */
 import { Database } from "bun:sqlite";
-import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord, type RecordImage } from "./types.ts";
+import { PRIORITIES, SOURCES, STATUSES, type Draft, type Patch, type Priority, type Run, type Source, type Status, type Todo, type TodoEvent, type OperationRecord, type RecordImage, type PlanVersion, type RecordRevision } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS todos (
@@ -54,6 +55,27 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS runs_todo ON runs(todo_id, id);
 `;
 
+const VERSIONS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS todo_plan_versions (
+  todo_id INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  source TEXT NOT NULL,
+  session TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (todo_id, version)
+);
+CREATE TABLE IF NOT EXISTS todo_record_revisions (
+  record_id INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (record_id, revision)
+);
+`;
+
 export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
@@ -62,8 +84,15 @@ export function openDb(path: string): Database {
   const cols = db.query("PRAGMA table_info(todos)").all() as { name: string }[];
   if (!cols.some((c) => c.name === "parent_id")) db.exec("ALTER TABLE todos ADD COLUMN parent_id INTEGER");
   db.exec("CREATE INDEX IF NOT EXISTS todos_parent ON todos(parent_id)");
+  // Plans came later still: the current text and its version number on the todo, every version in its own table.
+  if (!cols.some((c) => c.name === "plan")) db.exec("ALTER TABLE todos ADD COLUMN plan TEXT NOT NULL DEFAULT ''");
+  if (!cols.some((c) => c.name === "plan_version")) db.exec("ALTER TABLE todos ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0");
   const recordCols = db.query("PRAGMA table_info(todo_records)").all() as { name: string }[];
   if (!recordCols.some(c => c.name === "attachments")) db.exec("ALTER TABLE todo_records ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+  // Editable records: the current revision on the record, every revision (0 = as appended) in its own table.
+  if (!recordCols.some(c => c.name === "revision")) db.exec("ALTER TABLE todo_records ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+  if (!recordCols.some(c => c.name === "edited_at")) db.exec("ALTER TABLE todo_records ADD COLUMN edited_at TEXT");
+  db.exec(VERSIONS_SCHEMA);
   return db;
 }
 
@@ -80,6 +109,8 @@ const toTodo = (r: Row): Todo => ({
   id: r.id as number,
   title: r.title as string,
   notes: r.notes as string,
+  plan: (r.plan as string | undefined) ?? "",
+  planVersion: (r.plan_version as number | undefined) ?? 0,
   status: r.status as Status,
   priority: r.priority as Priority,
   due: (r.due as string | null) ?? null,
@@ -137,6 +168,13 @@ export function cleanProject(v: unknown): string | null {
 export function cleanNotes(v: unknown): string {
   return String(v ?? "").trim().slice(0, 20_000);
 }
+export const PLAN_MAX = 50_000;
+/** A plan may be empty (cleared); it must be text and is refused, not cut, past PLAN_MAX. */
+export function cleanPlan(v: unknown): string {
+  if (typeof v !== "string") throw new Error("plan content must be text");
+  if (v.length > PLAN_MAX) throw new Error(`plan exceeds ${PLAN_MAX} characters`);
+  return v.trim();
+}
 /** Reject invalid records instead of silently losing text. */
 export function cleanRecord(v: unknown): string {
   if (typeof v !== "string" || !v.trim()) throw new Error("record content is required");
@@ -159,7 +197,8 @@ export function cleanParent(v: unknown): number | null {
 export function cleanDraft(v: unknown): Draft {
   const d = (v ?? {}) as Record<string, unknown>;
   const parentId = cleanParent(d.parentId);
-  return { title: cleanTitle(d.title), notes: cleanNotes(d.notes), due: cleanDue(d.due), priority: cleanPriority(d.priority), tags: cleanTags(d.tags), project: cleanProject(d.project), ...(parentId ? { parentId } : {}) };
+  const plan = d.plan === undefined || d.plan === null ? "" : cleanPlan(d.plan);
+  return { title: cleanTitle(d.title), notes: cleanNotes(d.notes), due: cleanDue(d.due), priority: cleanPriority(d.priority), tags: cleanTags(d.tags), project: cleanProject(d.project), ...(parentId ? { parentId } : {}), ...(plan ? { plan } : {}) };
 }
 export function cleanPatch(v: unknown): Patch {
   const p = (v ?? {}) as Record<string, unknown>;
@@ -187,7 +226,7 @@ export function listTodos(db: Database, f: ListFilter = {}): Todo[] {
   const status = f.status ?? "active";
   if (status === "active") where.push(ACTIVE_WHERE);
   else if (status !== "all") { where.push("status = ?"); args.push(status); }
-  if (f.q) { where.push("(title LIKE ? OR notes LIKE ? OR tags LIKE ? OR project LIKE ?)"); const like = `%${f.q}%`; args.push(like, like, like, like); }
+  if (f.q) { where.push("(title LIKE ? OR notes LIKE ? OR plan LIKE ? OR tags LIKE ? OR project LIKE ?)"); const like = `%${f.q}%`; args.push(like, like, like, like, like); }
   if (f.tag) { where.push("tags LIKE ?"); args.push(`%${JSON.stringify(f.tag)}%`); }
   if (f.project) { where.push("project = ?"); args.push(f.project); }
   const sql = `${SELECT_TODOS} ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -231,7 +270,20 @@ export function listEvents(db: Database, todoId: number, limit = 100): TodoEvent
 const toRecord = (r: Row): OperationRecord => ({
   id: r.id as number, todoId: r.todo_id as number, content: r.content as string,
   source: r.source as Source, createdAt: r.created_at as string, attachments: JSON.parse(r.attachments as string),
+  revision: (r.revision as number | undefined) ?? 0, editedAt: (r.edited_at as string | null | undefined) ?? null,
 });
+const toRevision = (r: Row): RecordRevision => ({
+  recordId: r.record_id as number, revision: r.revision as number, content: r.content as string,
+  attachments: JSON.parse(r.attachments as string), source: r.source as Source, createdAt: r.created_at as string,
+});
+const toPlanVersion = (r: Row): PlanVersion => ({
+  todoId: r.todo_id as number, version: r.version as number, content: r.content as string, source: r.source as Source, createdAt: r.created_at as string,
+});
+
+/** A write based on an older version or revision than the stored one; `current` is what is there now. */
+export class ConflictError extends Error {
+  constructor(message: string, public current: Record<string, unknown>) { super(message); }
+}
 
 /** One transaction per append: simultaneous writers never replace each other's entries. */
 export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = []): OperationRecord | null {
@@ -254,6 +306,103 @@ export function listRecords(db: Database, todoId: number, limit = 50, before?: n
     .all(todoId, before ?? null, before ?? null, Math.min(Math.max(limit, 1), 101)) as Row[]).map(toRecord);
 }
 
+export function getRecord(db: Database, todoId: number, recordId: number): OperationRecord | null {
+  const r = db.query("SELECT * FROM todo_records WHERE id = ? AND todo_id = ?").get(recordId, todoId) as Row | null;
+  return r ? toRecord(r) : null;
+}
+
+/**
+ * Edit a record's text. The record keeps its id, time and author (`source`); the text it had is kept as a
+ * revision (the first edit also keeps revision 0, the text as appended), and a `record-edited` event
+ * names the new revision. `expectedRevision`, when given, must be the stored one, else ConflictError.
+ * Returns null when the todo or the record is not there.
+ */
+export function editRecord(db: Database, todoId: number, recordId: number, content: unknown, source: Source = "manual", expectedRevision?: number): OperationRecord | null {
+  if (!SOURCES.includes(source)) throw new Error("invalid record source");
+  return db.transaction(() => {
+    if (!getTodo(db, todoId)) return null;
+    const before = getRecord(db, todoId, recordId);
+    if (!before) return null;
+    // An image record may lose its text, as it may be appended without one.
+    const text = before.attachments?.length && typeof content === "string" && !content.trim() ? "" : cleanRecord(content);
+    if (expectedRevision !== undefined && expectedRevision !== before.revision) {
+      throw new ConflictError(`record #${recordId} was edited meanwhile (revision ${before.revision}, not ${expectedRevision})`, { record: before });
+    }
+    if (text === before.content) return before;
+    const t = now();
+    const attachments = JSON.stringify(before.attachments ?? []);
+    const insert = db.query("INSERT OR IGNORE INTO todo_record_revisions (record_id, revision, content, attachments, source, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+    if (before.revision === 0) insert.run(recordId, 0, before.content, attachments, before.source, before.createdAt);
+    const revision = before.revision + 1;
+    insert.run(recordId, revision, text, attachments, source, t);
+    const row = db.query("UPDATE todo_records SET content = ?, revision = ?, edited_at = ? WHERE id = ? RETURNING *").get(text, revision, t, recordId) as Row;
+    db.query("UPDATE todos SET updated_at = ? WHERE id = ?").run(t, todoId);
+    addEvent(db, todoId, "record-edited", { source, recordId, revision }, t);
+    return toRecord(row);
+  })();
+}
+
+/** Every revision of a record, oldest first; a record never edited answers its one text as revision 0. */
+export function listRecordRevisions(db: Database, todoId: number, recordId: number): RecordRevision[] | null {
+  const record = getRecord(db, todoId, recordId);
+  if (!record) return null;
+  const rows = (db.query("SELECT * FROM todo_record_revisions WHERE record_id = ? ORDER BY revision").all(recordId) as Row[]).map(toRevision);
+  return rows.length ? rows : [{ recordId, revision: 0, content: record.content, attachments: record.attachments ?? [], source: record.source, createdAt: record.createdAt }];
+}
+
+// ---- plans
+
+/**
+ * Write a todo's plan as a new version, in one transaction with the todo's cached copy and a
+ * `plan-edited { source, version }` event (the event holds the number, the text is in the version).
+ * `expectedVersion`, when given, must be the current version, else ConflictError (two windows, or the
+ * AI and the person, never overwrite each other unseen). `session` names one editor's typing: a save
+ * with the same session and source as the latest version, within EDIT_WINDOW_MS of it, rewrites that
+ * version instead of adding one per pause, as `mergeEdit` does for notes. A save with the text already
+ * there changes nothing. Returns null when there is no such todo.
+ */
+export function setPlan(db: Database, todoId: number, content: unknown, source: Source = "manual", opts: { expectedVersion?: number; session?: string; origin?: Record<string, unknown> } = {}): { todo: Todo; version: PlanVersion | null; merged: boolean } | null {
+  if (!SOURCES.includes(source)) throw new Error(`bad source ${source}`);
+  const text = cleanPlan(content);
+  const session = opts.session ? String(opts.session).slice(0, 64) : null;
+  return db.transaction(() => {
+    const before = getTodo(db, todoId);
+    if (!before) return null;
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== before.planVersion) {
+      throw new ConflictError(`the plan of #${todoId} was changed meanwhile (version ${before.planVersion}, not ${opts.expectedVersion})`, { plan: before.plan, planVersion: before.planVersion });
+    }
+    if (text === before.plan) return { todo: before, version: getPlanVersion(db, todoId, before.planVersion), merged: false };
+    const t = now();
+    const last = before.planVersion ? db.query("SELECT * FROM todo_plan_versions WHERE todo_id = ? AND version = ?").get(todoId, before.planVersion) as Row | null : null;
+    const merge = !!last && !!session && last.session === session && last.source === source && Date.parse(t) - Date.parse(last.created_at as string) <= EDIT_WINDOW_MS;
+    let version: number;
+    if (merge) {
+      version = before.planVersion;
+      db.query("UPDATE todo_plan_versions SET content = ?, created_at = ? WHERE todo_id = ? AND version = ?").run(text, t, todoId, version);
+      const ev = db.query("SELECT id FROM todo_events WHERE todo_id = ? AND kind = 'plan-edited' AND json_extract(data, '$.version') = ? ORDER BY id DESC LIMIT 1").get(todoId, version) as { id: number } | null;
+      if (ev) db.query("UPDATE todo_events SET at = ? WHERE id = ?").run(t, ev.id);
+      else addEvent(db, todoId, "plan-edited", { source, version, ...opts.origin }, t);
+    } else {
+      version = before.planVersion + 1;
+      db.query("INSERT INTO todo_plan_versions (todo_id, version, content, source, session, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(todoId, version, text, source, session, t);
+      addEvent(db, todoId, "plan-edited", { source, version, ...opts.origin }, t);
+    }
+    db.query("UPDATE todos SET plan = ?, plan_version = ?, updated_at = ? WHERE id = ?").run(text, version, t, todoId);
+    return { todo: getTodo(db, todoId)!, version: getPlanVersion(db, todoId, version), merged: merge };
+  })();
+}
+
+export function getPlanVersion(db: Database, todoId: number, version: number): PlanVersion | null {
+  const r = db.query("SELECT * FROM todo_plan_versions WHERE todo_id = ? AND version = ?").get(todoId, version) as Row | null;
+  return r ? toPlanVersion(r) : null;
+}
+
+/** Every version of a plan, newest first, without the text: its length and first line stand in for it. */
+export function listPlanVersions(db: Database, todoId: number): (Omit<PlanVersion, "content"> & { chars: number; excerpt: string })[] {
+  return (db.query("SELECT todo_id, version, source, created_at, length(content) AS chars, substr(content, 1, 120) AS excerpt FROM todo_plan_versions WHERE todo_id = ? ORDER BY version DESC").all(todoId) as Row[])
+    .map((r) => ({ todoId: r.todo_id as number, version: r.version as number, source: r.source as Source, createdAt: r.created_at as string, chars: r.chars as number, excerpt: String(r.excerpt).replace(/\s+/g, " ").trim() }));
+}
+
 export function createTodo(db: Database, draft: Draft, source: Source = "manual", origin: Record<string, unknown> = {}): Todo {
   if (!SOURCES.includes(source)) throw new Error(`bad source ${source}`);
   const d = cleanDraft(draft);
@@ -266,6 +415,7 @@ export function createTodo(db: Database, draft: Draft, source: Source = "manual"
   const todo = toTodo(r);
   addEvent(db, todo.id, "created", { source, ...(todo.parentId ? { parentId: todo.parentId } : {}), ...origin }, t);
   if (todo.parentId) addEvent(db, todo.parentId, "subtask-added", { source, id: todo.id, title: todo.title }, t);
+  if (d.plan) return setPlan(db, todo.id, d.plan, source)!.todo;
   return todo;
 }
 

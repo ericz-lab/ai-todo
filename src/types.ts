@@ -9,6 +9,10 @@ export type Todo = {
   id: number;
   title: string;
   notes: string;
+  /** The current plan (方案): a Markdown document of how the task is done; its old versions are kept. */
+  plan: string;
+  /** The plan's version number, 0 for a todo that never had one. */
+  planVersion: number;
   status: Status;
   priority: Priority;
   due: string | null;
@@ -29,6 +33,8 @@ export type Todo = {
 export type Draft = {
   title: string;
   notes?: string;
+  /** The initial plan, stored as version 1. */
+  plan?: string;
   due?: string | null;
   priority?: Priority;
   tags?: string[];
@@ -39,12 +45,22 @@ export type Draft = {
 
 export type Patch = Partial<Pick<Todo, "title" | "notes" | "status" | "priority" | "due" | "tags" | "project" | "parentId">>;
 
-/** One line of a todo's history; appended, never rewritten. */
+/** One line of a todo's history; appended, never rewritten (a typing session extends its own line). */
 export type TodoEvent = { id: number; todoId: number; kind: string; data: Record<string, unknown>; at: string };
 
-/** A progress or acceptance note, appended separately from editable task notes. */
+/** A progress or acceptance note, appended separately from editable task notes; editable, every revision kept. */
 export type RecordImage = { key: string; name: string; mime: string; size: number };
-export type OperationRecord = { attachments?: RecordImage[]; id: number; todoId: number; content: string; source: Source; createdAt: string };
+export type OperationRecord = {
+  attachments?: RecordImage[]; id: number; todoId: number; content: string; source: Source; createdAt: string;
+  /** 0 for a record never edited; each edit adds one. */
+  revision: number;
+  /** When it was last edited; null when never. */
+  editedAt: string | null;
+};
+/** One revision of a record: revision 0 is what was appended, the last one is the current text. */
+export type RecordRevision = { recordId: number; revision: number; content: string; attachments: RecordImage[]; source: Source; createdAt: string };
+/** One version of a todo's plan, in full. */
+export type PlanVersion = { todoId: number; version: number; content: string; source: Source; createdAt: string };
 
 /** One AI execution of a todo. */
 export type Run = {
@@ -65,8 +81,10 @@ export type Run = {
 export type Action =
   | ({ op: "add" } & Draft)
   | { op: "done" | "reopen" | "delete" | "start" | "defer"; id: number }
-  | ({ op: "update"; id: number } & Patch)
-  | { op: "record"; id: number; content: string };
+  | ({ op: "update"; id: number; plan?: string } & Patch)
+  | { op: "record"; id: number; content: string }
+  | { op: "plan"; id: number; content: string }
+  | { op: "edit-record"; id: number; recordId: number; content: string };
 
 export const STATUSES: Status[] = ["open", "doing", "deferred", "done", "dropped"];
 export const PRIORITIES: Priority[] = [0, 1, 2, 3];
