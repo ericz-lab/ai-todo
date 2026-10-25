@@ -3,7 +3,7 @@
  * into drafts, execute one todo, the chat's context) and the readers of what the model sends
  * back (a JSON array of drafts, a fenced `todo-actions` block in a chat answer).
  */
-import { cleanDraft, cleanPatch, cleanRecord } from "./db.ts";
+import { cleanDraft, cleanPatch, cleanPlan, cleanRecord } from "./db.ts";
 import type { Action, Draft, Todo, OperationRecord } from "./types.ts";
 
 // ---- the model service (docs/model.md)
@@ -154,12 +154,17 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
   if (todo.project) lines.push(`Project: ${todo.project}`);
   if (todo.tags.length) lines.push(`Tags: ${todo.tags.join(", ")}`);
   if (todo.notes) lines.push("", "Notes from the person:", todo.notes);
-  if (opts.parent) lines.push("", `This is one step of the larger task: ${opts.parent.title}${opts.parent.notes ? `\nIts notes: ${opts.parent.notes.slice(0, 1000)}` : ""}`);
+  if (todo.plan) lines.push("", `Plan (v${todo.planVersion}, the current design; follow it unless told otherwise):`, clip(todo.plan, PLAN_PROMPT_CHARS));
+  if (opts.parent) lines.push("", `This is one step of the larger task: ${opts.parent.title}${opts.parent.notes ? `\nIts notes: ${opts.parent.notes.slice(0, 1000)}` : ""}${opts.parent.plan ? `\nIts plan (excerpt): ${clip(opts.parent.plan, 1000)}` : ""}`);
   if (opts.subtasks?.length) lines.push("", "Its steps (subtasks):", ...opts.subtasks.map((s) => `- [${s.status === "done" ? "x" : " "}] ${s.title}`));
   if (opts.records?.length) lines.push("", "Recent operation records (newest first; older entries may be omitted):", ...opts.records.map((r) => `[${r.createdAt}, ${r.source}] ${r.content.slice(0, 4000)}`));
   if (opts.extra?.trim()) lines.push("", "Instructions for this run:", opts.extra.trim());
   return lines.join("\n");
 }
+
+/** How much of a plan the executor reads; the rest is cut with a note saying so. */
+export const PLAN_PROMPT_CHARS = 8000;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n[… cut at ${n} of ${s.length} characters]` : s);
 
 export const ACTIONS_FENCE = "todo-actions";
 export const DRAFTS_FENCE = "todo-drafts";
@@ -180,7 +185,11 @@ export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The perso
    {"op":"update","id":N, …any of title, notes, due, priority, tags, project, parentId…}  (parentId null takes a subtask out of its parent)
    {"op":"defer","id":N}   {"op":"done","id":N}   {"op":"start","id":N}   {"op":"reopen","id":N}   {"op":"delete","id":N}
    {"op":"record","id":N,"content":"…"}  (append progress, actions taken or acceptance results; never replace notes for these)
-   - Operation records are append-only. Correct an earlier entry by appending a new one. Distinguish verified facts from unverified claims.
+   {"op":"plan","id":N,"content":"…","expectedVersion":V}  (replace the task's plan (方案) with this whole Markdown text; V is the version the list shows, so a plan changed meanwhile is not overwritten)
+   {"op":"edit-record","id":N,"recordId":R,"content":"…"}  (rewrite operation record R of task N)
+   - The plan holds the design and how the task is done: it is one living document, rewritten as a whole and always the latest; earlier versions are kept. Progress, actions taken and acceptance results go into records, never into the plan. Notes stay the short description.
+   - The list shows only the start of a plan; never rewrite a plan you have not seen in full (ask the person, or leave it), and keep what the person wrote in it.
+   - Operation records are appended. Edit one only to correct a fact in it (a wrong id, a typo, a wrong number), never to change what was concluded at the time: append a new record for that. The earlier text is kept. Distinguish verified facts from unverified claims.
    - "暂不处理" uses defer; "恢复待办" uses reopen. Deferred tasks and unfinished children of deferred parents are excluded from daily plans unless explicitly requested. Deferring keeps dates and child statuses; reopening a parent makes its active children visible again.
    - Only ids from the list. Never delete without being asked; prefer done or update.
    - Subtasks go one level deep: a task listed under another (↳) cannot have its own, and a task with subtasks cannot become one. Marking a task done also finishes its unfinished subtasks, including deferred ones; deleting it deletes them.
@@ -202,7 +211,8 @@ export function chatContext(todos: Todo[], opts: { now: Date; timezone: string; 
     if (t.status === "doing") bits.push("(doing)");
     const records = opts.records?.[t.id] ?? [];
     const history = records.length ? "\n  Recent operation records (newest first, excerpts):\n" + records.map((r) => `    [${r.createdAt}, ${r.source}] ${r.content.replace(/\s+/g, " ").slice(0, 500)}`).join("\n") : "";
-    return `- ${bits.join(" · ")}${t.notes ? `\n  notes: ${t.notes.replace(/\s+/g, " ").slice(0, 200)}` : ""}${history}`;
+    const plan = t.plan ? `\n  plan (v${t.planVersion}, excerpt; full text via the task's detail): ${t.plan.replace(/\s+/g, " ").slice(0, 200)}` : "";
+    return `- ${bits.join(" · ")}${t.notes ? `\n  notes: ${t.notes.replace(/\s+/g, " ").slice(0, 200)}` : ""}${plan}${history}`;
   };
   const deferredIds = new Set(todos.filter((t) => t.status === "deferred").map((t) => t.id));
   const deferred = todos.filter((t) => t.status === "deferred" || ((t.status === "open" || t.status === "doing") && t.parentId !== null && deferredIds.has(t.parentId)));
@@ -267,8 +277,21 @@ export function cleanAction(v: unknown): Action {
   const id = () => { const n = Number(a.id); if (!Number.isInteger(n) || n <= 0) throw new Error("id required"); return n; };
   switch (op) {
     case "record": return { op, id: id(), content: cleanRecord(a.content) };
+    case "plan": {
+      const v = a.expectedVersion;
+      if (v !== undefined && v !== null && (!Number.isInteger(v) || (v as number) < 0)) throw new Error("expectedVersion must be a version number");
+      return { op, id: id(), content: cleanPlan(a.content), ...(typeof v === "number" ? { expectedVersion: v } : {}) };
+    }
+    case "edit-record": {
+      const r = Number(a.recordId);
+      if (!Number.isInteger(r) || r <= 0) throw new Error("recordId required");
+      return { op, id: id(), recordId: r, content: cleanRecord(a.content) };
+    }
     case "add": return { op, ...cleanDraft(a) };
-    case "update": { const { op: _o, id: _i, ...rest } = a; return { op, id: id(), ...cleanPatch(rest) }; }
+    case "update": {
+      const { op: _o, id: _i, plan, ...rest } = a;
+      return { op, id: id(), ...cleanPatch(rest), ...(plan !== undefined ? { plan: cleanPlan(plan) } : {}) };
+    }
     case "done": case "start": case "reopen": case "delete": case "defer": return { op, id: id() };
     default: throw new Error(`unknown op ${op}`);
   }

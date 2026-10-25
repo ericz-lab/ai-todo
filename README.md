@@ -18,9 +18,23 @@ Subtasks: a task can have steps, one level deep. They sit indented under their t
 
 The `todo` skill ships with the app: ai-space links it into the workspace, so any agent session there ("记一下明天要交报告", "今天要做什么") reaches the same list through the CLI.
 
+## Plan (方案)
+
+Every task has a **方案**: one Markdown document with the design and how the task is done, always the latest. Notes stay the short description of the task; progress, actions and acceptance results go into operation records, not into the plan. In the detail the plan sits under the notes: click to edit, it saves as you type (not while an IME composes), shows `v3 · 2 小时前 · manual`, and **版本** lists every version to read or restore (a restore is a new version; nothing is deleted). When another window or the AI changed the plan meanwhile the page says so and offers to load the latest or overwrite. Up to 50,000 characters.
+
+```bash
+bun src/cli.ts plan 3                          # print it
+bun src/cli.ts plan 3 --file plan.md --expect 2   # replace it (old versions kept); --file - reads stdin
+bun src/cli.ts plan-history 3 [--version 1]
+```
+
+- `PUT /api/todos/:id/plan { content, source, expectedVersion?, session? }` answers `{ ok, todo, planMeta }`, or 409 `{ conflict, plan, planVersion }` when `expectedVersion` is not the current version. `GET /api/todos/:id/plan/versions[?version=n]` lists the versions or answers one in full. `POST /api/todos` accepts `plan` as the first version.
+- Chat: `{ "op": "plan", "id": 3, "content": "…", "expectedVersion": 2 }`. The executor reads the plan.
+- Other apps: the `plan` capability writes it, `task` reads it in full, `list` answers a 300-character `planExcerpt` unless `plan: true`.
+
 ## Operation records
 
-Use the detail's **操作记录** section for progress, actions taken, verification evidence and remaining work. Each append stores its own timestamp and source (`manual`, `cli`, `chat`, or `ai`); it never replaces the editable notes or earlier records. Correct a record by appending a new entry. Records support Markdown, up to 20,000 characters each; empty entries without images and oversized entries are rejected. Choose or paste up to six PNG, JPEG, GIF or WebP images (10 MB each), preview/remove them before submission, and click saved thumbnails to open originals. Image-only records are supported. Completed tasks also accept records.
+Use the detail's **操作记录** section for progress, actions taken, verification evidence and remaining work. Each append stores its own timestamp and source (`manual`, `cli`, `chat`, or `ai`); it never replaces the editable notes or earlier records. A record can be edited (**编辑** on the record) to correct a fact; it keeps its id, time and author, every earlier revision is kept, and the record shows **已编辑 · time**, which opens the earlier revisions. A changed conclusion is a new entry, not an edit. Records support Markdown, up to 20,000 characters each; empty entries without images and oversized entries are rejected. Choose or paste up to six PNG, JPEG, GIF or WebP images (10 MB each), preview/remove them before submission, and click saved thumbnails to open originals. Image-only records are supported. Completed tasks also accept records.
 
 The newest 50 entries appear first; **查看更早记录** loads older entries. Unsaved record drafts survive closing or switching tasks during the current page session. Audit history separately records each append. Upgrading creates the records table automatically and keeps existing notes and history unchanged; no text is automatically moved out of old notes. Records remain stored for audit when their todo is deleted, like events and AI runs, but deleted todos are not exposed by the records API.
 
@@ -39,7 +53,7 @@ bun src/cli.ts show 3                    # includes recent records
 
 Another app reads the list through ai-space's bus (`POST /api/call/ai-todo/<capability>`): `list` answers tasks with their newest records (`{ status?, q?, tag?, project?, limit?, records? }`) and `task` one task in full (`{ id }`), both without changing anything. product-desk's board shows the specs this way.
 
-There are no edit or delete endpoints for individual records. Each append and its audit event are committed together. A POST is one new entry; callers should check recent records before retrying after an uncertain network response.
+`PATCH /api/todos/:id/records/:rid { content, source, expectedRevision? }` edits one (409 when edited meanwhile), `GET /api/todos/:id/records/:rid/revisions` lists its revisions, `bun src/cli.ts record-edit <id> <rid> <content>` from the shell, `{ "op": "edit-record", "id": 3, "recordId": 12, "content": "…" }` from chat. There is no delete. Each append or edit and its audit event are committed together. A POST is one new entry; callers should check recent records before retrying after an uncertain network response.
 
 ## Run locally
 

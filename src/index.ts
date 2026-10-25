@@ -19,8 +19,8 @@ import {
 } from "./ai.ts";
 import { config, databasePath } from "./config.ts";
 import {
-  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, createRun, createTodo, deleteTodo, finishRun, getTodo, listEvents, listRuns, listSubtasks, listTodos,
-  openDb, projectCounts, reorderTodos, runningRun, tagCounts, updateTodo,
+  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, createRun, createTodo, deleteTodo, editRecord, finishRun, getPlanVersion, getTodo,
+  listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, openDb, projectCounts, reorderTodos, runningRun, setPlan, tagCounts, updateTodo,
 } from "./db.ts";
 import { STATUSES, type Action, type Draft, type Run, type Source, type Status, type Todo } from "./types.ts";
 import { widgetPayload } from "./widget.ts";
@@ -50,6 +50,17 @@ const TZ_RE = /^[A-Za-z_]+(\/[A-Za-z_+-]+)*$/;
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 const fail = (error: string, status = 400) => json({ ok: false, error }, status);
+/** A refused write: 409 with what is stored now when it was based on an older version, else 400. */
+const refuse = (e: unknown) => (e instanceof ConflictError ? json({ ok: false, error: e.message, conflict: true, ...e.current }, 409) : fail((e as Error).message));
+/** An optional version number from a body: undefined when absent, else a non-negative integer. */
+const versionOf = (v: unknown, name: string): number | undefined => {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a version number`);
+  return n;
+};
+/** How much of a plan the `list` capability answers unless asked for the whole text. */
+const PLAN_EXCERPT = 300;
 const log = (msg: string) => console.log(`[ai-todo] ${new Date().toISOString()} ${msg}`);
 
 /** One execution in flight: the text so far and whoever is watching; the model call outlives the page. */
@@ -121,6 +132,22 @@ export function createServer(opts: ServerOptions) {
     finally { if (!committed) await Promise.allSettled(staged.map(image => blobs.remove(image.key))); }
   };
 
+  /** The latest plan version without its text (the todo carries the text): who wrote it and when. */
+  const planMeta = (t: Todo) => { const v = t.planVersion ? getPlanVersion(db, t.id, t.planVersion) : null; return v ? { version: v.version, source: v.source, createdAt: v.createdAt } : null; };
+  /** One todo in full: GET /api/todos/:id and the `task` capability. */
+  const detail = (todo: Todo) => ({
+    ok: true, todo, planMeta: planMeta(todo), parent: todo.parentId ? getTodo(db, todo.parentId) : null,
+    ...recordPage(todo.id), subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id),
+  });
+  /** A plan write from a JSON body { content, source?, expectedVersion?, session? }. */
+  const writePlan = (id: number, b: Record<string, unknown>, src: Source, origin: Record<string, unknown> = {}): Response => {
+    try {
+      const r = setPlan(db, id, b.content, src, { expectedVersion: versionOf(b.expectedVersion, "expectedVersion"), session: typeof b.session === "string" ? b.session : undefined, origin });
+      if (!r) return fail("no such todo", 404);
+      return json({ ok: true, todo: r.todo, planMeta: planMeta(r.todo), merged: r.merged });
+    } catch (e) { return refuse(e); }
+  };
+
   const recordPage = (id: number, before?: number) => {
     const rows = listRecords(db, id, 51, before);
     const records = rows.slice(0, 50);
@@ -146,6 +173,7 @@ export function createServer(opts: ServerOptions) {
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
   const startExecution = (todo: Todo, extra: string, timezone: string): Live => {
+    // `todo` carries the plan; executePrompt cuts it (and the parent's) to what a prompt can hold.
     const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
     const run = createRun(db, todo.id, prompt, null);
     const l = new Live(run);
@@ -220,8 +248,15 @@ export function createServer(opts: ServerOptions) {
         const before = getTodo(db, a.id);
         if (!before) { results.push({ op: a.op, id: a.id, ok: false, error: "no such todo" }); continue; }
         if (a.op === "record") { appendRecord(db, a.id, a.content, src); results.push({ op: a.op, id: a.id, ok: true, todo: getTodo(db, a.id) }); continue; }
+        if (a.op === "plan") { results.push({ op: a.op, id: a.id, ok: true, todo: setPlan(db, a.id, a.content, src, { expectedVersion: a.expectedVersion })!.todo }); continue; }
+        if (a.op === "edit-record") {
+          const r = editRecord(db, a.id, a.recordId, a.content, src);
+          results.push(r ? { op: a.op, id: a.id, ok: true, todo: getTodo(db, a.id) } : { op: a.op, id: a.id, ok: false, error: `no record #${a.recordId} on this todo` });
+          continue;
+        }
         if (a.op === "delete") { deleteTodo(db, a.id, src); results.push({ op: a.op, id: a.id, ok: true }); continue; }
-        const patch = a.op === "update" ? (({ op: _o, id: _i, ...rest }) => rest)(a)
+        if (a.op === "update" && a.plan !== undefined) setPlan(db, a.id, a.plan, src);
+        const patch = a.op === "update" ? (({ op: _o, id: _i, plan: _p, ...rest }) => rest)(a)
           : a.op === "defer" ? { status: "deferred" as const } : a.op === "done" ? { status: "done" as const } : a.op === "start" ? { status: "doing" as const } : { status: "open" as const };
         results.push({ op: a.op, id: a.id, ok: true, todo: updateTodo(db, a.id, patch, src) });
       } catch (e) {
@@ -304,7 +339,8 @@ export function createServer(opts: ServerOptions) {
         },
       },
       // `list` for other apps (space.yaml `provides.list`): tasks with their latest records, for a page that
-      // shows the list's work elsewhere (product-desk's board). Body { status?, q?, tag?, project?, limit?, records? }.
+      // shows the list's work elsewhere (product-desk's board). Body { status?, q?, tag?, project?, limit?, records?, plan? }.
+      // A plan comes as `planExcerpt` (its first PLAN_EXCERPT characters) unless `plan: true` asks for the text.
       "/api/capabilities/list": {
         POST: async (req) => {
           const b = await body(req);
@@ -314,7 +350,8 @@ export function createServer(opts: ServerOptions) {
           const limit = Math.min(Math.max(Number(b.limit) || 200, 1), 500);
           const perTodo = Math.min(Math.max(b.records === undefined || b.records === null ? 5 : Number(b.records) || 0, 0), 20);
           const todos = listTodos(db, { status: status as Status | "active" | "all", q: str(b.q), tag: str(b.tag), project: str(b.project) }).slice(0, limit);
-          return json({ ok: true, todos: todos.map((t) => ({ ...t, records: perTodo ? listRecords(db, t.id, perTodo) : [] })) });
+          const fullPlan = b.plan === true;
+          return json({ ok: true, todos: todos.map(({ plan, ...t }) => ({ ...t, ...(fullPlan ? { plan } : { planExcerpt: plan.slice(0, PLAN_EXCERPT) }), records: perTodo ? listRecords(db, t.id, perTodo) : [] })) });
         },
       },
       // `task` for other apps (space.yaml `provides.task`): one task in full, by id in the body since a bus call
@@ -324,8 +361,17 @@ export function createServer(opts: ServerOptions) {
           const b = await body(req);
           const id = idOf(String(b.id ?? "")); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
-          const parent = todo.parentId ? getTodo(db, todo.parentId) : null;
-          return json({ ok: true, todo, parent, ...recordPage(todo.id), subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
+          return json(detail(todo));
+        },
+      },
+      // `plan` for other apps (space.yaml `provides.plan`): replace a task's plan, by id in the body.
+      // Body { id, content, source? (default ai), expectedVersion? }; a stale expectedVersion answers 409 with the current plan.
+      "/api/capabilities/plan": {
+        POST: async (req) => {
+          const b = await body(req);
+          const id = idOf(String(b.id ?? ""));
+          if (!id || !getTodo(db, id)) return fail("no such todo", 404);
+          return writePlan(id, { ...b, session: undefined }, source(b.source ?? "ai"), caller(req));
         },
       },
       // `record` for other apps (space.yaml `provides.record`): a record with images on a task, by id in the body,
@@ -382,8 +428,7 @@ export function createServer(opts: ServerOptions) {
         GET: (req) => {
           const id = idOf(req.params.id); const todo = id && getTodo(db, id);
           if (!todo) return fail("no such todo", 404);
-          const parent = todo.parentId ? getTodo(db, todo.parentId) : null;
-          return json({ ok: true, todo, parent, ...recordPage(todo.id), subtasks: listSubtasks(db, todo.id), events: listEvents(db, todo.id), runs: listRuns(db, todo.id) });
+          return json(detail(todo));
         },
         PATCH: async (req) => {
           const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);
@@ -414,6 +459,45 @@ export function createServer(opts: ServerOptions) {
             const record = appendRecord(db, id, b.content, source(b.source));
             return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
           } catch (e) { return fail((e as Error).message); }
+        },
+      },
+      // The plan: PUT { content, source?, expectedVersion?, session? } writes a version (409 when expectedVersion is stale).
+      "/api/todos/:id/plan": {
+        GET: (req) => { const id = idOf(req.params.id); const todo = id && getTodo(db, id); return todo ? json({ ok: true, plan: todo.plan, planVersion: todo.planVersion, planMeta: planMeta(todo) }) : fail("no such todo", 404); },
+        PUT: async (req) => {
+          const id = idOf(req.params.id); if (!id) return fail("no such todo", 404);
+          const b = await body(req);
+          return writePlan(id, b, source(b.source));
+        },
+      },
+      // Every version newest first without text; `?version=n` answers that version in full.
+      "/api/todos/:id/plan/versions": {
+        GET: (req) => {
+          const id = idOf(req.params.id);
+          if (!id || !getTodo(db, id)) return fail("no such todo", 404);
+          const wanted = new URL(req.url).searchParams.get("version");
+          if (wanted === null) return json({ ok: true, versions: listPlanVersions(db, id) });
+          const n = Number(wanted); const v = Number.isInteger(n) && n > 0 ? getPlanVersion(db, id, n) : null;
+          return v ? json({ ok: true, version: v }) : fail("no such version", 404);
+        },
+      },
+      // Edit a record's text: PATCH { content, source?, expectedRevision? }; the earlier text is kept as a revision.
+      "/api/todos/:id/records/:rid": {
+        PATCH: async (req) => {
+          const id = idOf(req.params.id); const rid = idOf(req.params.rid);
+          if (!id || !rid) return fail("no such record", 404);
+          const b = await body(req);
+          try {
+            const record = editRecord(db, id, rid, b.content, source(b.source), versionOf(b.expectedRevision, "expectedRevision"));
+            return record ? json({ ok: true, record }) : fail("no such record", 404);
+          } catch (e) { return refuse(e); }
+        },
+      },
+      "/api/todos/:id/records/:rid/revisions": {
+        GET: (req) => {
+          const id = idOf(req.params.id); const rid = idOf(req.params.rid);
+          const revisions = id && rid && getTodo(db, id) ? listRecordRevisions(db, id, rid) : null;
+          return revisions ? json({ ok: true, revisions }) : fail("no such record", 404);
         },
       },
       "/api/todos/:id/execute": { POST: (req) => { const id = idOf(req.params.id); return id ? execute(req, id) : fail("no such todo", 404); } },

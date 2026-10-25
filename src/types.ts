@@ -83,7 +83,7 @@ export type Action =
   | { op: "done" | "reopen" | "delete" | "start" | "defer"; id: number }
   | ({ op: "update"; id: number; plan?: string } & Patch)
   | { op: "record"; id: number; content: string }
-  | { op: "plan"; id: number; content: string }
+  | { op: "plan"; id: number; content: string; expectedVersion?: number }
   | { op: "edit-record"; id: number; recordId: number; content: string };
 
 export const STATUSES: Status[] = ["open", "doing", "deferred", "done", "dropped"];

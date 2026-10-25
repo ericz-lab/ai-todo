@@ -48,12 +48,16 @@ provides:
     http: { method: POST, path: /api/todos/bulk }
     timeout: 30s
   list:
-    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, deferred, done, dropped; default active), q?, tag?, project?, limit? (max 500), records? (per task, default 5) }; answers { ok, todos [{ ...todo, records [newest first] }] }.
+    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, deferred, done, dropped; default active), q?, tag?, project?, limit? (max 500), records? (per task, default 5), plan? (true for each plan's full text) }; answers { ok, todos [{ ...todo, planVersion, planExcerpt (first 300 characters; plan instead with plan true), records [newest first, each with revision and editedAt] }] }.
     http: { method: POST, path: /api/capabilities/list }
     timeout: 30s
   task:
-    description: Read one task in full; nothing is changed. Body { id }; answers { ok, todo, parent, records, recordsNextBefore, subtasks, events, runs } like GET /api/todos/:id.
+    description: Read one task in full; nothing is changed. Body { id }; answers { ok, todo (with plan and planVersion), planMeta { version, source, createdAt }, parent, records, recordsNextBefore, subtasks, events, runs } like GET /api/todos/:id.
     http: { method: POST, path: /api/capabilities/task }
+    timeout: 30s
+  plan:
+    description: Replace a task's plan (方案, the Markdown design of how it is done; at most 50000 characters, empty clears it); the earlier version is kept. Body { id, content, source? (default ai), expectedVersion? (the planVersion you read; a plan changed since answers 409 with the current plan and planVersion) }; answers { ok, todo, planMeta }.
+    http: { method: POST, path: /api/capabilities/plan }
     timeout: 30s
   record:
     description: Add a record to a task, with pictures. Multipart { todoId, content? (text, may be empty when there are images), source? (manual, ai, chat or cli), images (0-6 PNG, JPEG, GIF or WebP files) }; answers { ok, record } with its attachments. The whole call is capped at 4 MiB by the bus.

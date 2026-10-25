@@ -6,6 +6,8 @@ import { Database } from "bun:sqlite";
 import {
   ConflictError, EDIT_WINDOW_MS, appendRecord, createTodo, editRecord, getPlanVersion, getTodo, listEvents, listPlanVersions, listRecordRevisions, listRecords, listTodos, openDb, setPlan,
 } from "./db.ts";
+import { createServer } from "./index.ts";
+import { chatContext, cleanAction, executePrompt, PLAN_PROMPT_CHARS } from "./ai.ts";
 
 describe("plans", () => {
   test("each write is a version; the todo carries the latest; events hold the number only", () => {
@@ -143,5 +145,142 @@ describe("migration on open", () => {
       expect(getTodo(again, 1)!.plan).toBe("new plan");
       again.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("plan and record-edit API", () => {
+  test("routes, conflicts, capabilities, chat operations and the CLI", async () => {
+    const db = openDb(":memory:");
+    const { server } = createServer({ db, port: 0, web: false });
+    const base = `http://127.0.0.1:${server.port}`;
+    const call = async (method: string, path: string, data?: unknown, headers: Record<string, string> = {}) => {
+      const r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
+      return { status: r.status, body: (await r.json()) as Record<string, any> };
+    };
+    try {
+      const { body: created } = await call("POST", "/api/todos", { title: "With plan", notes: "one line", plan: "## v1" });
+      const id = created.todo.id as number;
+      expect(created.todo).toMatchObject({ plan: "## v1", planVersion: 1, notes: "one line" });
+
+      // PUT: 200, conflict 409 with the current text, 404, too long, not text; empty clears.
+      const put = await call("PUT", `/api/todos/${id}/plan`, { content: "## v2", expectedVersion: 1 });
+      expect(put.status).toBe(200);
+      expect(put.body).toMatchObject({ todo: { plan: "## v2", planVersion: 2 }, planMeta: { version: 2, source: "manual" }, merged: false });
+      const stale = await call("PUT", `/api/todos/${id}/plan`, { content: "## from another window", expectedVersion: 1 });
+      expect(stale.status).toBe(409);
+      expect(stale.body).toMatchObject({ ok: false, conflict: true, plan: "## v2", planVersion: 2 });
+      expect((await call("PUT", "/api/todos/9999/plan", { content: "x" })).status).toBe(404);
+      expect((await call("PUT", `/api/todos/${id}/plan`, { content: "x".repeat(50_001) })).status).toBe(400);
+      expect((await call("PUT", `/api/todos/${id}/plan`, { content: 3 })).status).toBe(400);
+      expect((await call("PUT", `/api/todos/${id}/plan`, { content: "y", expectedVersion: "two" })).status).toBe(400);
+      // The page's typing session merges into its version.
+      await call("PUT", `/api/todos/${id}/plan`, { content: "## v3 a", session: "tab1" });
+      const typed = await call("PUT", `/api/todos/${id}/plan`, { content: "## v3 ab", session: "tab1", expectedVersion: 3 });
+      expect(typed.body).toMatchObject({ merged: true, todo: { planVersion: 3 } });
+
+      const versions = await call("GET", `/api/todos/${id}/plan/versions`);
+      expect(versions.body.versions.map((v: { version: number }) => v.version)).toEqual([3, 2, 1]);
+      expect((await call("GET", `/api/todos/${id}/plan/versions?version=1`)).body.version).toMatchObject({ version: 1, content: "## v1" });
+      expect((await call("GET", `/api/todos/${id}/plan/versions?version=9`)).status).toBe(404);
+      expect((await call("GET", `/api/todos/${id}/plan`)).body).toMatchObject({ plan: "## v3 ab", planVersion: 3 });
+      const detail = await call("GET", `/api/todos/${id}`);
+      expect(detail.body.todo.plan).toBe("## v3 ab");
+      expect(detail.body.planMeta).toMatchObject({ version: 3, source: "manual" });
+      expect(detail.body.events.filter((e: { kind: string }) => e.kind === "plan-edited")).toHaveLength(3);
+
+      // Records: edit, conflict, 404, empty, revisions.
+      const { body: rec } = await call("POST", `/api/todos/${id}/records`, { content: "Acceptance: 3 of 4 pass", source: "ai" });
+      const rid = rec.record.id as number;
+      const ok = await call("PATCH", `/api/todos/${id}/records/${rid}`, { content: "Acceptance: 3 of 5 pass", expectedRevision: 0 });
+      expect(ok.status).toBe(200);
+      expect(ok.body.record).toMatchObject({ id: rid, source: "ai", content: "Acceptance: 3 of 5 pass", revision: 1 });
+      const late = await call("PATCH", `/api/todos/${id}/records/${rid}`, { content: "other", expectedRevision: 0 });
+      expect(late.status).toBe(409);
+      expect(late.body.record).toMatchObject({ revision: 1 });
+      expect((await call("PATCH", `/api/todos/${id}/records/${rid}`, { content: " " })).status).toBe(400);
+      expect((await call("PATCH", `/api/todos/${id}/records/${rid}`, { content: "x".repeat(20_001) })).status).toBe(400);
+      expect((await call("PATCH", `/api/todos/${id}/records/9999`, { content: "x" })).status).toBe(404);
+      expect((await call("PATCH", `/api/todos/9999/records/${rid}`, { content: "x" })).status).toBe(404);
+      const revisions = await call("GET", `/api/todos/${id}/records/${rid}/revisions`);
+      expect(revisions.body.revisions.map((r: { content: string }) => r.content)).toEqual(["Acceptance: 3 of 4 pass", "Acceptance: 3 of 5 pass"]);
+      expect((await call("GET", `/api/todos/${id}/records/9999/revisions`)).status).toBe(404);
+
+      // Capabilities: list gives an excerpt unless asked, task the full plan, plan writes with the caller in the event.
+      setPlan(db, id, "p".repeat(400), "manual");
+      const listed = (await call("POST", "/api/capabilities/list", {})).body.todos.find((t: { id: number }) => t.id === id);
+      expect(listed.planExcerpt).toHaveLength(300);
+      expect(listed).not.toHaveProperty("plan");
+      expect(listed.planVersion).toBe(4);
+      const full = (await call("POST", "/api/capabilities/list", { plan: true })).body.todos.find((t: { id: number }) => t.id === id);
+      expect(full.plan).toHaveLength(400);
+      expect(full).not.toHaveProperty("planExcerpt");
+      expect((await call("POST", "/api/capabilities/task", { id })).body).toMatchObject({ todo: { planVersion: 4 }, planMeta: { version: 4 } });
+      const viaBus = await call("POST", "/api/capabilities/plan", { id, content: "## from product-desk", expectedVersion: 4 }, { "x-space-caller": "product-desk" });
+      expect(viaBus.body).toMatchObject({ todo: { plan: "## from product-desk", planVersion: 5 }, planMeta: { source: "ai" } });
+      expect(listEvents(db, id)[0]).toMatchObject({ kind: "plan-edited", data: { source: "ai", version: 5, caller: "product-desk" } });
+      expect((await call("POST", "/api/capabilities/plan", { id, content: "x", expectedVersion: 1 })).status).toBe(409);
+      expect((await call("POST", "/api/capabilities/plan", { id: 9999, content: "x" })).status).toBe(404);
+
+      // Chat operations.
+      const applied = await call("POST", "/api/ai/apply", { actions: [
+        { op: "plan", id, content: "## chat plan", expectedVersion: 5 },
+        { op: "plan", id, content: "## stale", expectedVersion: 1 },
+        { op: "edit-record", id, recordId: rid, content: "Acceptance: 4 of 5 pass" },
+        { op: "edit-record", id, recordId: 9999, content: "nothing" },
+        { op: "update", id, title: "With plan (renamed)", plan: "## via update" },
+      ] });
+      expect(applied.body.results.map((r: { ok: boolean }) => r.ok)).toEqual([true, false, true, false, true]);
+      expect(getTodo(db, id)).toMatchObject({ title: "With plan (renamed)", plan: "## via update", planVersion: 7 });
+      expect(listRecords(db, id)[0]).toMatchObject({ content: "Acceptance: 4 of 5 pass", revision: 2 });
+
+      // CLI: plan --file, plan, plan-history, record-edit, show.
+      const cli = async (...args: string[]) => {
+        const p = Bun.spawn(["bun", "src/cli.ts", ...args], { env: { ...process.env, TODO_URL: base }, stdout: "pipe", stderr: "pipe" });
+        const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+        return { out, err, code };
+      };
+      const file = join(mkdtempSync(join(tmpdir(), "todo-plan-cli-")), "plan.md");
+      await Bun.write(file, "## CLI plan\n\n- with `quotes` and $dollars\n");
+      expect((await cli("plan", String(id), "--file", file)).out).toContain(`plan of #${id} is now v8`);
+      expect((await cli("plan", String(id))).out).toContain("- with `quotes` and $dollars");
+      expect((await cli("plan-history", String(id))).out.split("\n")[0]).toMatch(/^v8\t.*\tcli\t/);
+      expect((await cli("plan-history", String(id), "--version", "1")).out).toContain("## v1");
+      expect((await cli("record-edit", String(id), String(rid), "Acceptance: 5 of 5 pass")).out).toContain("revision 3");
+      const shown = (await cli("show", String(id))).out;
+      expect(shown.indexOf("=== plan v8")).toBeGreaterThan(-1);
+      expect(shown.indexOf("=== plan v8")).toBeLessThan(shown.indexOf(`--- record ${rid}`));
+      expect(shown).toContain("(revision 3)");
+      const conflict = await cli("plan", String(id), "--set", "x", "--expect", "1");
+      expect(conflict.code).toBe(1);
+      expect(conflict.err).toContain("changed meanwhile");
+    } finally { server.stop(true); db.close(); }
+  });
+});
+
+describe("plans in the AI paths", () => {
+  const base = createTodo(openDb(":memory:"), { title: "t" });
+  test("the executor reads the plan, cut at its limit, and the parent's plan as an excerpt", () => {
+    const todo = { ...base, notes: "short", plan: "P".repeat(PLAN_PROMPT_CHARS + 10), planVersion: 4 };
+    const parent = { ...base, id: 99, title: "Parent", plan: "Q".repeat(1500), planVersion: 1 };
+    const prompt = executePrompt(todo, { now: new Date(), timezone: "UTC", lang: "zh", parent });
+    expect(prompt).toContain("Plan (v4, the current design; follow it unless told otherwise):");
+    expect(prompt).toContain(`[… cut at ${PLAN_PROMPT_CHARS} of ${PLAN_PROMPT_CHARS + 10} characters]`);
+    expect(prompt.indexOf("Notes from the person")).toBeLessThan(prompt.indexOf("Plan (v4"));
+    expect(prompt).toContain("Its plan (excerpt): " + "Q".repeat(1000) + "\n[… cut at 1000 of 1500 characters]");
+    expect(executePrompt({ ...base }, { now: new Date(), timezone: "UTC", lang: "zh" })).not.toContain("Plan (");
+  });
+  test("the chat sees an excerpt with the version and can write plans and edit records", () => {
+    const ctx = chatContext([{ ...base, plan: "第一步\n\n" + "x".repeat(300), planVersion: 2 }], { now: new Date(), timezone: "UTC", lang: "zh" });
+    const line = ctx.text.split("\n").find((l) => l.includes("plan (v2"))!;
+    expect(line).toContain("plan (v2, excerpt; full text via the task's detail): 第一步 x");
+    expect(line.length).toBeLessThan(300);
+    expect(ctx.system).toContain('"op":"plan"');
+    expect(ctx.system).toContain('"op":"edit-record"');
+    expect(cleanAction({ op: "plan", id: 1, content: " ## p " })).toEqual({ op: "plan", id: 1, content: "## p" });
+    expect(cleanAction({ op: "plan", id: 1, content: "", expectedVersion: 0 })).toEqual({ op: "plan", id: 1, content: "", expectedVersion: 0 });
+    expect(cleanAction({ op: "edit-record", id: 1, recordId: 2, content: "fixed" })).toEqual({ op: "edit-record", id: 1, recordId: 2, content: "fixed" });
+    expect(cleanAction({ op: "update", id: 1, plan: "p" })).toEqual({ op: "update", id: 1, plan: "p" });
+    for (const bad of [{ op: "plan", id: 1 }, { op: "plan", id: 1, content: "x".repeat(50_001) }, { op: "plan", id: 1, content: "x", expectedVersion: -1 },
+      { op: "edit-record", id: 1, content: "x" }, { op: "edit-record", id: 1, recordId: 2, content: "" }, { op: "rewrite", id: 1 }]) expect(() => cleanAction(bad)).toThrow();
   });
 });
