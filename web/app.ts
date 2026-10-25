@@ -463,13 +463,14 @@ function closeDetail() {
   if (!cur) return;
   clearTimeout(saveTimer); void flushSave(); void flushPlan();
   liveAbort?.abort(); liveAbort = null;
+  if (plan.full.open) plan.full.close();
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
   history.replaceState(null, "", view === "all" ? location.pathname : `?view=${view}`);
   void load();
 }
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => { if (!els.detail.hidden) closeDetail(); else closeDrawers(); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
 
@@ -477,6 +478,10 @@ window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPla
 const plan = {
   text: $<HTMLTextAreaElement>("#d-plan"), view: $("#d-plan-view"), meta: $("#d-plan-meta"), state: $("#d-plan-state"),
   conflictBar: $("#d-plan-conflict"), drawer: $("#d-plan-drawer"), list: $("#d-plan-list"), show: $("#d-plan-show"), versionsBtn: $<HTMLButtonElement>("#d-plan-versions"),
+  read: $("#d-plan-read"), empty: $("#d-plan-empty"), more: $<HTMLButtonElement>("#d-plan-more"), editBtn: $<HTMLButtonElement>("#d-plan-edit"),
+  full: $<HTMLDialogElement>("#plan-full"), fullBody: $("#pf-body"), fullMeta: $("#pf-meta"),
+  /** Read-only (rendered, two lines) until 编辑; 完成 goes back. */
+  mode: "view" as "view" | "edit",
   /** The version the text in the box is based on; a save says so, and the server answers 409 when it moved on. */
   version: 0,
   /** One id per opened detail: saves with it merge into this editor's own latest version for a minute. */
@@ -489,7 +494,7 @@ const plan = {
 };
 const newSession = () => (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).slice(0, 64);
 function planMetaText(meta: PlanMeta | null) {
-  plan.meta.textContent = meta ? `v${meta.version} · ${fmtAgo(meta.createdAt)} · ${meta.source}` : "还没有方案";
+  plan.meta.textContent = plan.fullMeta.textContent = meta ? `v${meta.version} · ${fmtAgo(meta.createdAt)} · ${meta.source}` : "";
 }
 function fillPlan(t: Todo, meta: PlanMeta | null) {
   clearTimeout(plan.timer);
@@ -497,15 +502,57 @@ function fillPlan(t: Todo, meta: PlanMeta | null) {
   plan.text.value = t.plan; plan.state.textContent = ""; plan.conflictBar.hidden = true;
   plan.drawer.hidden = true; plan.versionsBtn.setAttribute("aria-expanded", "false"); plan.versionsBtn.hidden = !t.planVersion;
   planMetaText(meta);
-  showPlan(t.plan ? "view" : "edit");
+  if (plan.full.open) plan.full.close();
+  showPlan("view");
 }
+/**
+ * The plan is read-only by default: rendered Markdown cut to two lines, 更多 (only when it is longer) opens the
+ * whole of it in an overlay, and 编辑 turns the section into the textarea until 完成. Clicking the text never edits it.
+ */
 function showPlan(mode: "view" | "edit") {
-  if (mode === "view" && plan.text.value.trim()) { plan.view.innerHTML = renderMd(plan.text.value); plan.view.hidden = false; plan.text.hidden = true; }
-  else { plan.view.hidden = true; plan.text.hidden = false; sizePlan(); }
+  plan.mode = mode;
+  const editing = mode === "edit";
+  plan.text.hidden = !editing; plan.read.hidden = editing;
+  plan.editBtn.textContent = editing ? "完成" : "编辑";
+  plan.editBtn.title = editing ? "保存并回到只读" : "编辑方案";
+  if (editing) { sizePlan(); return; }
+  const has = !!plan.text.value.trim();
+  plan.view.innerHTML = has ? renderMd(plan.text.value) : "";
+  plan.view.hidden = !has; plan.empty.hidden = has;
+  measurePlan();
 }
+/** 更多 only when the rendered plan is taller than its two lines; measured again whenever the box changes size. */
+function measurePlan() {
+  plan.more.hidden = plan.view.hidden || plan.view.scrollHeight <= plan.view.clientHeight + 1;
+  plan.read.classList.toggle("clipped", !plan.more.hidden);
+}
+new ResizeObserver(() => { if (plan.mode === "view") measurePlan(); }).observe(plan.view);
 function sizePlan() { plan.text.style.height = "auto"; plan.text.style.height = `${Math.max(84, plan.text.scrollHeight + 2)}px`; }
-plan.view.onclick = (e) => { if ((e.target as HTMLElement).closest("a")) return; showPlan("edit"); plan.text.focus(); };
-plan.text.onblur = () => { if (!plan.conflict) showPlan("view"); };
+function editPlan() {
+  if (plan.full.open) plan.full.close();
+  showPlan("edit");
+  plan.text.focus();
+}
+/** 完成: save what is pending, then back to read-only; a conflict keeps the editor until it is resolved in the bar. */
+async function finishPlan() {
+  await flushPlan();
+  if (plan.conflict) { toast("先处理方案冲突"); plan.text.focus(); return; }
+  showPlan("view");
+  plan.editBtn.focus();
+}
+plan.editBtn.onclick = () => { if (plan.mode === "edit") void finishPlan(); else editPlan(); };
+plan.text.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.isComposing) { e.preventDefault(); e.stopPropagation(); void finishPlan(); } });
+plan.more.onclick = () => {
+  plan.fullBody.innerHTML = renderMd(plan.text.value);
+  plan.full.showModal();
+  plan.fullBody.scrollTop = 0;
+  plan.fullBody.focus();
+};
+$("#pf-close").onclick = () => plan.full.close();
+$("#pf-edit").onclick = editPlan;
+// A click on the backdrop lands on the dialog itself (the card fills it); Esc closes it natively.
+plan.full.onclick = (e) => { if (e.target === plan.full) plan.full.close(); };
+plan.full.addEventListener("close", () => { if (plan.mode === "view" && !els.detail.hidden) plan.more.focus(); });
 function schedulePlan() {
   plan.dirty = true;
   if (plan.conflict) return;   // nothing is saved until the person chooses in the bar
@@ -559,7 +606,7 @@ $("#d-plan-reload").onclick = () => {
   if (!plan.conflict) return;
   plan.text.value = plan.conflict.plan; plan.version = plan.conflict.planVersion;
   plan.conflict = null; plan.dirty = false; plan.conflictBar.hidden = true; plan.state.textContent = "已载入最新";
-  showPlan(plan.text.value ? "view" : "edit");
+  showPlan("view");
   if (cur) void api<Detail>(`/api/todos/${cur.id}`).then((r) => { if (cur?.id === r.todo.id) { planMetaText(r.planMeta); renderEvents(r.events); } }, () => {});
 };
 $("#d-plan-force").onclick = async () => {
@@ -1071,6 +1118,8 @@ const loadWidget = (): Promise<void> => {
 };
 async function mountChat() {
   try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sub ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
+  // A detail opened from ?todo= before the renderer arrived shows plain paragraphs; render it again now.
+  if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
   SpaceChat!.mount(els.chat, {
     scope: "todo", theme: "auto", lang: "zh", attachments: false, timeoutMs: 300_000,
     context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`),

@@ -123,6 +123,7 @@
         <span class="plan-meta" id="d-plan-meta"></span>
         <div class="grow"></div>
         <span class="plan-state" id="d-plan-state" aria-live="polite"></span>
+        <button class="btn small" id="d-plan-edit" aria-controls="d-plan">编辑</button>
         <button class="btn small" id="d-plan-versions" aria-expanded="false">版本</button>
       </div>
       <div class="plan-conflict" id="d-plan-conflict" role="alert" hidden>
@@ -130,8 +131,12 @@
         <button class="btn small" id="d-plan-reload">载入最新</button>
         <button class="btn small danger" id="d-plan-force">覆盖</button>
       </div>
-      <div id="d-plan-view" class="d-notes-view md" title="点击编辑" hidden></div>
-      <textarea id="d-plan" class="d-notes" maxlength="50000" placeholder="方案：做法和设计，支持 Markdown。始终是最新版，旧版本会保留。进展和验收写到操作记录。" spellcheck="false"></textarea>
+      <div class="plan-read" id="d-plan-read">
+        <div id="d-plan-view" class="plan-clamp md"></div>
+        <p class="plan-empty" id="d-plan-empty" hidden>暂无方案</p>
+        <button class="plan-more" id="d-plan-more" aria-haspopup="dialog" hidden>更多</button>
+      </div>
+      <textarea id="d-plan" class="d-notes" aria-labelledby="d-plan-label" hidden maxlength="50000" placeholder="方案：做法和设计，支持 Markdown。始终是最新版，旧版本会保留。进展和验收写到操作记录。" spellcheck="false"></textarea>
       <div class="plan-drawer" id="d-plan-drawer" hidden>
         <div class="plan-list" id="d-plan-list"></div>
         <div class="plan-show" id="d-plan-show"></div>
@@ -159,6 +164,17 @@
     <details class="history"><summary class="sub">历史</summary><div id="d-events" class="events"></div></details>
   </div>
 </div>
+
+<dialog class="plan-full" id="plan-full" aria-labelledby="pf-title">
+  <div class="pf-card">
+    <div class="pf-bar">
+      <div class="pf-heading"><h2 id="pf-title">方案</h2><span class="plan-meta" id="pf-meta"></span></div>
+      <button class="btn small" id="pf-edit">编辑</button>
+      <button class="icon-btn" id="pf-close" title="关闭" aria-label="关闭"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="pf-body md" id="pf-body" tabindex="0" aria-label="完整方案"></div>
+  </div>
+</dialog>
 
 <script type="module" src="./app.ts"></script>
 </body>

@@ -288,6 +288,28 @@ button { cursor: pointer; }
 .plan-head { display: flex; align-items: center; gap: 10px; min-height: 28px; }
 .plan-head h3 { font-size: 13px; font-weight: 600; color: var(--text); }
 .plan-meta, .plan-state { font-size: 12.5px; color: var(--muted); }
+/* Read-only by default: two lines of the rendered plan, 更多 opens the whole of it; only 编辑 shows the textarea. */
+.plan-read { position: relative; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 10px 12px; font-size: 14px; line-height: 1.6; }
+.plan-clamp { max-height: 3.2em; overflow: hidden; overflow-wrap: anywhere; }
+.plan-clamp > :first-child { margin-top: 0; } .plan-clamp p, .plan-clamp li { line-height: 1.6; }
+.plan-read.clipped .plan-clamp { -webkit-mask-image: linear-gradient(to bottom, #000 45%, transparent); mask-image: linear-gradient(to bottom, #000 45%, transparent); }
+.plan-read.clipped { padding-bottom: 6px; }
+.plan-empty { color: var(--faint); font-size: 13.5px; }
+.plan-more { display: block; margin: 2px 0 0 auto; border: 0; background: transparent; padding: 2px 4px; border-radius: 6px; font-size: 13px; color: var(--ai); cursor: pointer; }
+.plan-more:hover { background: var(--ai-soft); }
+.plan-more:focus-visible, .pf-body:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+/* The whole plan in an overlay above the detail (a modal <dialog>: Esc, backdrop and × close it). */
+.plan-full { padding: 0; border: 0; background: transparent; color: var(--text); width: min(760px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 10vh); margin: 5vh auto auto; overflow: visible; }
+.plan-full::backdrop { background: rgba(20,20,18,.32); }
+.pf-card { display: flex; flex-direction: column; gap: 10px; max-height: calc(100dvh - 10vh); padding: 16px 20px 18px; border-radius: 20px; background: var(--surface); border: 1px solid var(--border); box-shadow: 0 24px 60px rgba(20,20,18,.22); }
+.pf-bar { display: flex; align-items: center; gap: 10px; }
+.pf-heading { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pf-heading h2 { font-size: 17px; font-weight: 600; }
+.pf-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; font-size: 14.5px; line-height: 1.65; overflow-wrap: anywhere; padding: 2px 2px 4px; border-radius: 6px; }
+@media (max-width: 760px) {
+  .plan-full { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); margin: 10px auto auto; }
+  .pf-card { max-height: calc(100dvh - 20px); padding: 14px 14px 16px; border-radius: 16px; }
+}
 .plan-conflict { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
 .plan-conflict span { flex: 1; min-width: 180px; }
 .plan-drawer { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr); gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 8px; background: var(--surface-2); }

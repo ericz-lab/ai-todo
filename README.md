@@ -20,7 +20,7 @@ The `todo` skill ships with the app: ai-space links it into the workspace, so an
 
 ## Plan (方案)
 
-Every task has a **方案**: one Markdown document with the design and how the task is done, always the latest. Notes stay the short description of the task; progress, actions and acceptance results go into operation records, not into the plan. In the detail the plan sits under the notes: click to edit, it saves as you type (not while an IME composes), shows `v3 · 2 小时前 · manual`, and **版本** lists every version to read or restore (a restore is a new version; nothing is deleted). When another window or the AI changed the plan meanwhile the page says so and offers to load the latest or overwrite. Up to 50,000 characters.
+Every task has a **方案**: one Markdown document with the design and how the task is done, always the latest. Notes stay the short description of the task; progress, actions and acceptance results go into operation records, not into the plan. In the detail the plan sits under the notes, read-only: two lines of it, **更多** (when it is longer) opens the whole plan in an overlay, and only **编辑** turns it into an editor until **完成** (or Esc), so a stray click never edits it. While editing it saves as you type (not while an IME composes), shows `v3 · 2 小时前 · manual`, and **版本** lists every version to read or restore (a restore is a new version; nothing is deleted). When another window or the AI changed the plan meanwhile the page says so and offers to load the latest or overwrite. Up to 50,000 characters.
 
 ```bash
 bun src/cli.ts plan 3                          # print it
