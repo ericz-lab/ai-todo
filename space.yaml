@@ -59,6 +59,10 @@ provides:
     description: Replace a task's plan (方案, the Markdown design of how it is done; at most 50000 characters, empty clears it); the earlier version is kept. Body { id, content, source? (default ai), expectedVersion? (the planVersion you read; a plan changed since answers 409 with the current plan and planVersion) }; answers { ok, todo, planMeta }.
     http: { method: POST, path: /api/capabilities/plan }
     timeout: 30s
+  status:
+    description: Move a task to doing (work started), review (finished, for the person to accept; notifies once) or back to open. A task already done or dropped is not reopened (409). Body { id, status (doing, review or open), source? (default ai) }; answers { ok, todo }. ai-space's feedback button moves its tasks this way while the Fix Engineer works on them.
+    http: { method: POST, path: /api/capabilities/status }
+    timeout: 30s
   record:
     description: Add a record to a task, with pictures. Multipart { todoId, content? (text, may be empty when there are images), source? (manual, ai, chat or cli), images (0-6 PNG, JPEG, GIF or WebP files) }; answers { ok, record } with its attachments. The whole call is capped at 4 MiB by the bus.
     http: { method: POST, path: /api/capabilities/record }

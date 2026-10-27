@@ -189,6 +189,20 @@ describe("service", () => {
     // Reads leave no trace: the task's events are still the create and the three records.
     expect(((await j(`/api/todos/${spec.id}`)).body.events as unknown[]).length).toBe(4);
   });
+  test("status for another app: doing, review, back to open; a closed task stays closed", async () => {
+    const call = (b: Record<string, unknown>) => j("/api/capabilities/status", { method: "POST", headers: { "x-space-caller": "space" }, body: JSON.stringify(b) });
+    const made = await j("/api/todos", { method: "POST", body: JSON.stringify({ title: "[Todo] button overlaps the list" }) });
+    const id = (made.body.todo as Todo).id;
+    expect((await call({ id, status: "doing" })).body.todo).toMatchObject({ id, status: "doing" });
+    expect((await call({ id, status: "review" })).body.todo).toMatchObject({ id, status: "review" });
+    const events = ((await j(`/api/todos/${id}`)).body.events as { kind: string; data: Record<string, unknown> }[]);
+    expect(events.find((e) => e.kind === "review")?.data).toMatchObject({ source: "ai", caller: "space" });
+    expect((await call({ id, status: "open" })).body.todo).toMatchObject({ status: "open" });
+    expect((await call({ id, status: "done" })).status).toBe(400);
+    expect((await call({ id: 999999, status: "doing" })).status).toBe(404);
+    await j(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "done" }) });
+    expect((await call({ id, status: "doing" })).status).toBe(409);
+  });
   test("a todo added by another app through the bus records its caller", async () => {
     const r = await j("/api/todos/bulk", { method: "POST", headers: { "x-space-caller": "ai-spark" }, body: JSON.stringify({ drafts: [{ title: "from an idea" }], source: "ai" }) });
     const id = (r.body.todos as Todo[])[0]!.id;

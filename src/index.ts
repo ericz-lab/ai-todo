@@ -446,6 +446,19 @@ export function createServer(opts: ServerOptions) {
           return writePlan(id, { ...b, session: undefined }, source(b.source ?? "ai"), caller(req));
         },
       },
+      // `status` for other apps (space.yaml `provides.status`): move a task to doing, review or back to open, by id in
+      // the body, through changeTodo so entering review notifies once. A task the person closed stays closed (409).
+      "/api/capabilities/status": {
+        POST: async (req) => {
+          const b = await body(req);
+          const id = idOf(String(b.id ?? "")); const todo = id && getTodo(db, id);
+          if (!id || !todo) return fail("no such todo", 404);
+          if (!["doing", "review", "open"].includes(String(b.status))) return fail("status must be doing, review or open");
+          if (todo.status === "done" || todo.status === "dropped") return fail(`the task is ${todo.status}`, 409);
+          try { return json({ ok: true, todo: changeTodo(id, { status: b.status as Status }, source(b.source ?? "ai"), caller(req)) }); }
+          catch (e) { return fail((e as Error).message); }
+        },
+      },
       // `record` for other apps (space.yaml `provides.record`): a record with images on a task, by id in the body,
       // since a bus call has no path. Multipart { todoId, content?, source?, images[] }; same limits as the page's.
       "/api/capabilities/record": {
