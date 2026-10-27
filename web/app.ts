@@ -1121,10 +1121,10 @@ async function mountChat() {
   // A detail opened from ?todo= before the renderer arrived shows plain paragraphs; render it again now.
   if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
   SpaceChat!.mount(els.chat, {
-    scope: "todo", theme: "auto", lang: "zh", attachments: false, timeoutMs: 300_000,
+    scope: "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
     context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`),
     placeholder: "写下要做的事，或者「把明天的都推到周五」「今天先做什么」…",
-    emptyText: "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。",
+    emptyText: "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
     presets: [
       { label: "今日计划", prompt: "根据截止时间和优先级，给我今天的执行顺序，简短。", send: true },
       { label: "整理优先级", prompt: "看一遍清单，把明显紧急或重要的调整优先级，并说明理由。", send: true },

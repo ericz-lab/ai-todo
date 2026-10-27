@@ -171,6 +171,7 @@ export const ACTIONS_FENCE = "todo-actions";
 export const DRAFTS_FENCE = "todo-drafts";
 
 export const CHAT_SYSTEM = `You are the single AI entry of a todo app. The person's whole list is given to you before the conversation, with ids. Every message is one of three things; decide which and answer accordingly, briefly, in the person's language.
+A message may carry images (a screenshot, a photo of a note or a whiteboard, a chat): read them and treat what they show as part of the message; a picture of things to do is case 1, with the details it shows in the drafts. Never invent what an image does not show.
 
 1. THINGS TO DO. The message is a note of tasks ("明天下午三点前发周报，周五订机票 #出差", a pasted list, a meeting note). Turn it into drafts: one fenced block, language \`${DRAFTS_FENCE}\`, holding a JSON array; the app shows the drafts for the person to check and add. Say nothing else, or one short line at most. Never add these yourself.
    Draft: {"title": string, "notes": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "priority": 0|1|2|3, "tags": string[], "project": string | null, "parentId"?: N}
