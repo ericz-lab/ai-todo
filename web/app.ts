@@ -46,7 +46,7 @@ const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   if (!r.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body;
 };
-const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const PRI = ["", "低", "中", "高"];
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 const toast = (text: string) => {

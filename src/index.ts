@@ -17,7 +17,7 @@ import {
   chatContext, draftsFromAnswer, EXECUTE_SYSTEM, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
   type ModelClient,
 } from "./ai.ts";
-import { config, databasePath } from "./config.ts";
+import { appZone, config, databasePath } from "./config.ts";
 import {
   appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getTodo,
   listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
@@ -97,7 +97,7 @@ export function createServer(opts: ServerOptions) {
   const spaceAppToken = opts.spaceAppToken ?? "";
   const publicBase = opts.publicBase ?? "";
   const lang = opts.lang ?? "zh";
-  const defaultTz = opts.timezone ?? "Asia/Shanghai";
+  const defaultTz = opts.timezone ?? appZone();
   const executeTimeoutMs = opts.executeTimeoutMs ?? 600_000;
   const autoReview = opts.autoReview ?? true;
   const tools = (opts.webTools ?? true) ? WEB_TOOLS : [];

@@ -18,9 +18,19 @@ export const config = {
   executeTimeoutSec: num("TODO_EXECUTE_TIMEOUT", 600),
   /** Language of the page and of the model's answers. */
   lang: env("TODO_LANG", "zh"),
-  /** IANA zone the dates on the page are read in, when the page does not say. */
-  timezone: env("TODO_TZ", "Asia/Shanghai"),
+  /** IANA zone the dates on the page are read in, when the page does not say: the system zone. */
+  timezone: appZone(),
 };
+
+/**
+ * The zone due dates are read in when a request names none: the system's zone (the machine the
+ * service runs on), or `TODO_TZ` when it is set to a valid zone (tests pin it).
+ */
+export function appZone(): string {
+  const z = (process.env.TODO_TZ ?? "").trim();
+  if (z) { try { new Intl.DateTimeFormat("en-US", { timeZone: z }); return z; } catch { /* not a zone: fall through */ } }
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
 
 /** SQLite file: `DATABASE_URL` (sqlite:///abs/path) from ai-space, else data/main.db. */
 export function databasePath(e: Record<string, string | undefined> = process.env): string {
