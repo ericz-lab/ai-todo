@@ -10,10 +10,12 @@ export const config = {
   /** ai-space's API and this app's token (handed over in space.env); every AI feature goes through them. */
   spaceApiUrl: env("SPACE_API_URL").replace(/\/$/, ""),
   spaceAppToken: env("SPACE_APP_TOKEN"),
-  /** Let an execution search the web (0 = off): WebSearch and WebFetch. */
+  /** Let the AI panel search the web (0 = off): WebSearch and WebFetch. An execution is a full agent with its native tools. */
   web: env("TODO_WEB", "1") !== "0",
   /** A successful execution sends an open or doing todo to review (验收); 0 keeps its status. */
   autoReview: env("TODO_AUTO_REVIEW", "1") !== "0",
+  /** Model of an execution, a full-mode agent run: `<runtime>/<tier>` or a model id (ai-space docs/model-tiers-and-modes.md); opus by default. */
+  executeModel: env("TODO_EXECUTE_MODEL", "claude/intermediate"),
   /** Wall-clock cap of one execution, seconds. */
   executeTimeoutSec: num("TODO_EXECUTE_TIMEOUT", 600),
   /** Language of the page and of the model's answers. */

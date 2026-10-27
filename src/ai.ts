@@ -8,7 +8,8 @@ import type { Action, Draft, Todo, OperationRecord } from "./types.ts";
 
 // ---- the model service (docs/model.md)
 
-export type ModelRequest = { prompt: string; system?: string; tag: string; tools?: string[]; thinking?: number; timeoutMs?: number; model?: string };
+/** `mode`: slim is a bare completion; full keeps the CLI's native agent context and tools (ai-space docs/model-tiers-and-modes.md). */
+export type ModelRequest = { prompt: string; system?: string; tag: string; tools?: string[]; thinking?: number; timeoutMs?: number; model?: string; mode?: "slim" | "full" };
 export type ModelCall = { id: number; model?: string; backend?: string; costUsd?: number | null; durationMs?: number };
 export type ModelResult = { ok: true; text: string; call?: ModelCall } | { ok: false; error: string; call?: ModelCall };
 export type ModelEvent = { event: "delta"; text: string } | { event: "done"; text: string; call?: ModelCall } | { event: "error"; error: string; call?: ModelCall };
@@ -135,12 +136,21 @@ export function draftsFromAnswer(text: string): Draft[] {
   return out.slice(0, 50);
 }
 
-export const EXECUTE_SYSTEM = `You are the executor behind a todo app. A person hands you one task from their list and you do as much of it as a model with the web can honestly do: research, compare, draft, plan, compute, write the text they will send, list the steps they still have to take themselves.
+/**
+ * The executor's brief. The run is a full-mode agent (the CLI with its native tools), so the brief
+ * goes at the head of the prompt instead of `system`: a `system` would replace the agent's own
+ * base instructions.
+ */
+export const EXECUTE_SYSTEM = `You are the executor behind a todo app, running as a full agent with your native tools. A person hands you one task from their list: carry it out as far as you honestly can (research, compare, draft, plan, compute, inspect or change what the task names, write the text they will send) and list the steps they still have to take themselves.
 Rules:
 - Do the task, do not describe how one would do it. If it asks for a draft, write the draft. If it asks for a decision, make a recommendation with reasons.
-- Facts you look up carry their source (a link). Facts you cannot verify are marked as unverified. Never invent names, prices, dates or links.
+- Stay inside the task: change nothing it does not ask for, and nothing irreversible (deleting data, sending messages, spending money, publishing) unless the task or the run's instructions say so explicitly.
+- Facts you look up carry their source (a link or a path). Facts you cannot verify are marked as unverified. Never invent names, prices, dates or links.
 - Actions only the person can take (pay, send, call, book, sign) are listed under a final heading as a short checklist; say clearly what is done and what is not.
-- Answer in the person's language, in Markdown, concise: lead with the result, then the evidence, then the checklist. No preamble.`;
+- Your final answer is the run's report: in the person's language, in Markdown, concise: lead with the result, then the evidence (what you did and checked), then the checklist. No preamble.`;
+
+/** What the full-mode agent reads: the brief, then the task. */
+export const executeAgentPrompt = (task: string) => `${EXECUTE_SYSTEM}\n\n---\n\n${task}`;
 
 export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; parent?: Todo | null; subtasks?: Todo[]; records?: OperationRecord[] }): string {
   const lines = [

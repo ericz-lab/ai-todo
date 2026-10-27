@@ -3,7 +3,7 @@
  * only, answer GET /healthz with 200, log to stdout, exit on SIGTERM within 10 seconds.
  *
  * Routes: the page (/), todos (/api/todos…), the AI entry (/api/ai/parse: free text to drafts;
- * /api/todos/:id/execute: one todo done by the model, streamed and stored as a run;
+ * /api/todos/:id/execute: one todo carried out by a full-mode agent run, streamed and stored as a run;
  * /api/ai/context, /api/ai/drafts + /api/ai/apply: the chat's context, the drafts and the
  * operations an answer carries),
  * the panel widget (/api/widget), and a proxy of /space/chat/* to ai-space's chat service
@@ -14,7 +14,7 @@ import { KEY_RE, mimeOfKey, newKey, openStore, sniffImage, type BlobStore } from
 import type { RecordImage } from "./types.ts";
 import index from "../web/index.html";
 import {
-  chatContext, draftsFromAnswer, EXECUTE_SYSTEM, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
+  chatContext, draftsFromAnswer, executeAgentPrompt, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
   type ModelClient,
 } from "./ai.ts";
 import { appZone, config, databasePath } from "./config.ts";
@@ -37,6 +37,8 @@ export interface ServerOptions {
   timezone?: string;
   lang?: string;
   executeTimeoutMs?: number;
+  /** Model of an execution (a full-mode agent run); claude/intermediate (opus) when unset. */
+  executeModel?: string;
   webTools?: boolean;
   /** A successful execution of an open or doing todo sends it to review (验收); false keeps its status (TODO_AUTO_REVIEW=0). */
   autoReview?: boolean;
@@ -99,6 +101,7 @@ export function createServer(opts: ServerOptions) {
   const lang = opts.lang ?? "zh";
   const defaultTz = opts.timezone ?? appZone();
   const executeTimeoutMs = opts.executeTimeoutMs ?? 600_000;
+  const executeModel = opts.executeModel || "claude/intermediate";
   const autoReview = opts.autoReview ?? true;
   const tools = (opts.webTools ?? true) ? WEB_TOOLS : [];
   const model: ModelClient | null = spaceApiUrl && spaceAppToken ? modelClient(spaceApiUrl, spaceAppToken) : null;
@@ -243,7 +246,8 @@ export function createServer(opts: ServerOptions) {
       try {
         let text = "";
         let ended = false;
-        for await (const ev of model!.stream({ prompt, system: EXECUTE_SYSTEM, tag: "execute", tools, timeoutMs: executeTimeoutMs })) {
+        // A full-mode agent run, not a chat answer: the CLI keeps its native context and tools; no `system`, so its own agent instructions stay.
+        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
           if (ev.event === "delta") { text += ev.text; l.text = text; l.emit("delta", { text: ev.text }); }
           else if (ev.event === "done") { ended = true; finished = finishRun(db, run.id, { ok: true, output: ev.text || text, callId: ev.call?.id ?? null, model: ev.call?.model ?? null, costUsd: ev.call?.costUsd ?? null }); }
           else { ended = true; finished = finishRun(db, run.id, { ok: false, output: text, error: ev.error, callId: ev.call?.id ?? null, costUsd: ev.call?.costUsd ?? null }); }
@@ -665,7 +669,7 @@ if (import.meta.main) {
   if (abandoned) log(`closed ${abandoned} run(s) left running by the last stop`);
   const { server } = createServer({
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
-    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, webTools: config.web, autoReview: config.autoReview,
+    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, webTools: config.web, autoReview: config.autoReview,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

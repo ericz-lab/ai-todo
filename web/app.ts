@@ -384,7 +384,7 @@ function rowHtml(t: Item, nested = false): string {
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
     <div class="ops">${t.status === "review"
       ? `<button class="btn ok" data-op="accept" title="验收通过，标为完成">通过</button><button class="btn" data-op="reject" title="验收不通过，写明原因后退回">退回</button>`
-      : `<button class="btn" data-op="run" title="交给 AI 执行"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button>`}</div>
+      : `<button class="btn" data-op="run" title="交给 AI 智能体执行（完整模式，不是对话）"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button>`}</div>
   </div>`;
 }
 async function setStatus(id: number, status: Status) {

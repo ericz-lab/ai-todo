@@ -14,7 +14,8 @@ const space = Bun.serve({
     calls.push({ path: url.pathname, auth: req.headers.get("authorization"), body });
     if (req.headers.get("cookie")) return new Response("cookie leaked", { status: 500 });
     if (url.pathname === "/api/model/run") {
-      expect(body).not.toHaveProperty("model");
+      // Parsing and chat inherit the space default; only an execution (a full-mode agent run) names its model.
+      if (body.tag !== "execute") expect(body).not.toHaveProperty("model");
       if (failNext) { failNext = false; return new Response(JSON.stringify({ ok: false, error: "quota", call: { id: 9 } }), { status: 502, headers: { "content-type": "application/json" } }); }
       if (body.tag === "parse") return Response.json({ ok: true, text: '```json\n[{"title":"发周报给老板","due":"2026-09-23T15:00","priority":2,"tags":["工作"],"project":null,"notes":""},{"title":"订去上海的机票","due":"2026-09-26","tags":["出差"]}]\n```', call: { id: 1, model: "sonnet" } });
       if (body.stream) {
@@ -115,8 +116,11 @@ describe("service", () => {
     expect(events.map((e) => e.event)).toEqual(["run", "delta", "delta", "done"]);
     expect((events[3]!.data.run as Run)).toMatchObject({ status: "ok", output: "## 结果\n查好了。", callId: 2, model: "opus", costUsd: 0.12 });
     const call = calls.find((c) => c.body.tag === "execute")!;
-    expect(call.body.tools).toEqual(["WebSearch", "WebFetch"]);
-    expect(call.body.stream).toBe(true);
+    // A full-mode agent run on opus, with its native tools and instructions: no tool list, no system.
+    expect(call.body).toMatchObject({ mode: "full", model: "claude/intermediate", stream: true });
+    expect(call.body).not.toHaveProperty("tools");
+    expect(call.body).not.toHaveProperty("system");
+    expect(String(call.body.prompt)).toStartWith("You are the executor behind a todo app, running as a full agent");
     expect(String(call.body.prompt)).toContain("Task: 买牛奶");
     expect(String(call.body.prompt)).toContain("Instructions for this run:\n只要一句话");
     const runs = (await j(`/api/todos/${todo.id}/runs`)).body.runs as Run[];
