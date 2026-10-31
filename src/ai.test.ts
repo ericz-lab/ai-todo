@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chatContext, clockLine, draftsFromAnswer, extractActions, extractDrafts, extractJsonArray, parsePrompt, stripBlocks } from "./ai.ts";
+import { CHAT_SYSTEM, chatContext, clockLine, draftsFromAnswer, extractActions, extractDrafts, extractJsonArray, parsePrompt, stripBlocks } from "./ai.ts";
 import type { Todo } from "./types.ts";
 
 describe("parse answers", () => {
@@ -47,6 +47,11 @@ describe("chat actions", () => {
     expect(ctx.text).toContain("Recently done (1)");
     expect(ctx.system).toContain("todo-actions");
     expect(ctx.system).toContain("todo-drafts");
+  });
+  test("the chat prompt creates todos by default and researches only when asked", () => {
+    expect(CHAT_SYSTEM).toContain("Do not research");
+    expect(CHAT_SYSTEM).toContain("explicitly asks for it now");
+    expect(CHAT_SYSTEM).toContain("create the todo (case 1)");
   });
 });
 
