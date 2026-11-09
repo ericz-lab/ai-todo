@@ -636,6 +636,10 @@ export function finishRun(db: Database, id: number, result: { ok: boolean; outpu
 export function listRuns(db: Database, todoId: number, limit = 20): Run[] {
   return (db.query("SELECT * FROM runs WHERE todo_id = ? ORDER BY id DESC LIMIT ?").all(todoId, limit) as Row[]).map(toRun);
 }
+export function getRun(db: Database, id: number): Run | null {
+  const r = db.query("SELECT * FROM runs WHERE id = ?").get(id) as Row | null;
+  return r ? toRun(r) : null;
+}
 export function runningRun(db: Database, todoId: number): Run | null {
   const r = db.query("SELECT * FROM runs WHERE todo_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1").get(todoId) as Row | null;
   return r ? toRun(r) : null;

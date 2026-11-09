@@ -35,6 +35,7 @@ src/widget.ts          the panel card: items and state blocks
 src/types.ts           data model
 src/config.ts          environment
 src/blobs.ts           private BLOB_URL image storage (file or S3), following trade-journal
+src/remote.ts        * several machines: the `ops` capability, the machine list, forwarding to a peer
 src/cli.ts             the CLI the planner agent uses
 src/migrate-plans.ts   one-time copy of `## AI 评估` records into plans (--dry-run first)
 web/index.html         the page shell; app.ts the logic; styles.css the glass
@@ -69,9 +70,22 @@ bun src/cli.ts list
 
 See `.env.example`. Provided by ai-space: `PORT`, `SPACE_APP`, `SPACE_APP_DIR`, `SPACE_APP_DATA_DIR`, `SPACE_API_URL`, `SPACE_APP_TOKEN`, `DATABASE_URL`.
 
+## Several machines
+
+Every machine runs its own instance with its own list; they never sync. The hub (the space that lists the others as peers) shows them all; a peer's page shows only its own.
+
+- Each instance provides the bus capability `ops` (`POST /api/remote`, `src/remote.ts`): one request for one of its own page routes, from an allowlist (not the chat proxy, the run stream, the bus capabilities, nor `/api/remote` and `/api/m` themselves), accepted only from `ai-todo` or `<hub>/ai-todo` (`x-space-caller`). The method, path and body (base64, so multipart uploads pass) travel in a JSON envelope because the bus carries only a body and its content type; the answer comes back whole, pictures included.
+- `GET /api/machines` lists this machine and the peers whose ai-space catalogue (`GET /api/capabilities`, read with the app token; a peer's app is `<peer>/ai-todo`) has `ai-todo/ops`. `/api/m/<peer>/<route>` forwards the page's request as `POST /api/call/<peer>/ai-todo/ops`; non-GET requests keep the same-origin rule; bodies above about 2.9 MB are refused (the bus takes 4 MiB, base64 adds a third).
+- The bus buffers answers, so nothing streams across machines: the page starts an execution on a peer with `POST /api/todos/:id/execute?detach=1` and reads `GET /api/runs/:id` every 1.5 s. The AI panel's chat runs on the hub's ai-space (one conversation per machine, scope `todo-<peer>`); its context and its actions go to the machine shown.
+- The page's sidebar has a 机器 section when there is more than one machine; `?m=<peer>` opens that machine's list.
+- On the hub, the peers' ai-todo tiles are hidden (`PATCH /api/peers/<peer>/apps/ai-todo { hidden: true }`), so the panel has one entry. Each peer's own panel keeps its own.
+- Calls to ai-todo's other capabilities (add, record, capture, the Fix Engineer) go to the ai-todo of the caller's own space first; name a peer to reach another list (`POST /api/call/<peer>/ai-todo/<capability>`).
+- `TODO_EXECUTE_MODEL` differs per machine (a runtime that is signed in there): set it in `apps/ai-todo/.env` on that machine.
+
 ## Deployment
 
-- Host: the `thinkbook` space (Local edition on a Linux laptop kept always on, `SPACE_NAME=thinkbook`), workspace `~/.ai-space`, code in `apps/ai-todo` (the bare repository's work tree, no `.git`). It is a peer of the seoul space, whose panel lists it and forwards calls to it. Moved from seoul on 2026-10-24.
+- Instances: seoul (the hub), david and thinkbook, each with its own `~/ai-todo.git` and its own data. Deploy every one: `git push <machine> main`.
+- Host of the original list: the `thinkbook` space (Local edition on a Linux laptop kept always on, `SPACE_NAME=thinkbook`), workspace `~/.ai-space`, code in `apps/ai-todo` (the bare repository's work tree, no `.git`). It is a peer of the seoul space, whose panel lists it and forwards calls to it. Moved from seoul on 2026-10-24.
 - Deploy: `git push deploy main` (remote `deploy` = `~/ai-todo.git` on that machine; its `post-receive` hook from `deploy/post-receive` runs `space app deploy ai-todo`: checkout, the manifest's checks, sync, restart only when they pass).
 - Service: supervised by ai-space (`SPACE_SUPERVISOR=space`) as the user unit `space-ai-todo.service`, `127.0.0.1:8970`, health `GET /healthz`. Logs: `space logs ai-todo -n 50`.
 - Data: `data/ai-todo/main.db` (`DATABASE_URL` in `data/ai-todo/space.env`), pictures in R2 under `s3://my-bucket/ai-todo/` (`BLOB_URL`); the space's `ai-todo/backup` task snapshots it nightly to `s3://my-bucket/backups-thinkbook/`. Snapshots from before the move are under seoul's `backups/` prefix.

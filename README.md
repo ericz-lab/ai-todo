@@ -80,6 +80,12 @@ bun src/cli.ts parse "明天下午三点前发周报"      # drafts, not added
 bun src/cli.ts execute 3 --extra "只要一页"
 ```
 
+## Several machines
+
+Install it on every machine that should keep its own list. On the hub (the space that has the others as
+peers) the sidebar gains a 机器 section: pick a machine to see and change its list, run its tasks and talk
+to the AI about it. A peer's page shows only its own list. See [AGENTS.md](AGENTS.md#several-machines).
+
 ## Deploy
 
 A bare repository with `deploy/post-receive` on the host (`git push seoul main`), or `DEPLOY_HOST=<ssh host> ./deploy.sh`. See [AGENTS.md](AGENTS.md) for the host details once it is live.

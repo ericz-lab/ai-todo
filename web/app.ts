@@ -40,8 +40,20 @@ const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document): T =
 const esc = (s: unknown): string => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Markdown through the space's renderer; plain paragraphs when the widget (and so ai-space) is not there. */
 const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? SpaceChat.renderMd(src) : String(src ?? "").split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join(""));
+// ---- machines
+/**
+ * The machine whose list the page shows: "" for this one, else a peer running ai-todo, whose routes
+ * this service forwards (`/api/m/<peer>/…`, through ai-space's bus). Only a hub has peers to show.
+ */
+type Machine = { via: string; name: string; active: number | null; error: string | null };
+let machines: Machine[] = [];
+let via = new URLSearchParams(location.search).get("m") ?? "";
+/** A page route on the machine shown: the API and the record pictures; the chat stays on this machine. */
+const on = (path: string): string => (via && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(via)}${path}` : path);
+const machineName = () => machines.find((m) => m.via === via)?.name ?? via;
+
 const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-  const r = await fetch(path, { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
+  const r = await fetch(on(path), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
   const body = (await r.json()) as T & { ok?: boolean; error?: string };
   if (!r.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body;
@@ -182,10 +194,15 @@ async function loadMore(btn: HTMLButtonElement) {
     renderList();
   } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = "加载更多"; }
 }
-const setView = (v: View) => {
-  view = v;
-  history.replaceState(null, "", v === "all" ? location.pathname : `?view=${v}`);
+/** The address keeps the view and the machine, so a link reopens the same list. */
+const syncUrl = () => {
+  const q = new URLSearchParams();
+  if (view !== "all") q.set("view", view);
+  if (via) q.set("m", via);
+  const s = q.toString();
+  history.replaceState(null, "", s ? `?${s}` : location.pathname);
 };
+const setView = (v: View) => { view = v; syncUrl(); };
 
 // ---- sidebar
 const isToday = (t: Item) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
@@ -465,7 +482,7 @@ function closeDetail() {
   liveAbort?.abort(); liveAbort = null;
   if (plan.full.open) plan.full.close();
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
-  history.replaceState(null, "", view === "all" ? location.pathname : `?view=${view}`);
+  syncUrl();
   void load();
 }
 $("#d-close").onclick = closeDetail;
@@ -565,7 +582,7 @@ plan.text.oninput = (e) => { sizePlan(); if (!(e as InputEvent).isComposing) sch
 plan.text.addEventListener("compositionend", () => schedulePlan());
 /** One PUT of the plan; answers the parsed body and the status, so a 409 can be shown instead of thrown. */
 async function putPlan(id: number, body: Record<string, unknown>) {
-  const r = await fetch(`/api/todos/${id}/plan`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: "manual", ...body }) });
+  const r = await fetch(on(`/api/todos/${id}/plan`), { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: "manual", ...body }) });
   return { status: r.status, body: (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; todo?: Todo; planMeta?: PlanMeta | null; plan?: string; planVersion?: number } };
 }
 async function flushPlan(force = false): Promise<void> {
@@ -824,7 +841,7 @@ let recordCursor: number | null = null;
 const shownRecords = new Map<number, OperationRecord>();
 const recordHtml = (r: OperationRecord) => `<article class="operation-record" data-rid="${r.id}">
     <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button class="btn small" data-edit>编辑</button></div>
-    <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="/blobs/${esc(image.key)}" target="_blank" rel="noopener"><img src="/blobs/${esc(image.key)}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
+    <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="${esc(on(`/blobs/${image.key}`))}" target="_blank" rel="noopener"><img src="${esc(on(`/blobs/${image.key}`))}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
 function renderRecords(page: RecordPage, append = false) {
   if (!append) shownRecords.clear();
   for (const r of page.records) shownRecords.set(r.id, r);
@@ -859,7 +876,7 @@ d.records.addEventListener("click", async (e) => {
     save.onclick = async () => {
       save.disabled = true;
       try {
-        const r = await fetch(`/api/todos/${todoId}/records/${rid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: ta.value, source: "manual", expectedRevision: record.revision }) });
+        const r = await fetch(on(`/api/todos/${todoId}/records/${rid}`), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: ta.value, source: "manual", expectedRevision: record.revision }) });
         const b = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; record?: OperationRecord };
         if (r.status === 409 && b.record) {
           // Someone edited it meanwhile: show theirs, keep this text in the box to merge by hand.
@@ -954,6 +971,26 @@ async function runExecute() {
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
   followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, timezone: TZ }) });
 }
+/**
+ * A run on another machine, as the same events the stream gives: the bus cannot stream, so the run
+ * is started detached and read every 1.5 s (`GET /api/runs/:id`) until it ends.
+ */
+async function* pollRun(url: string, init: RequestInit, signal: AbortSignal): AsyncIterable<{ event: string; data: string }> {
+  let runId: number;
+  const m = /^\/api\/runs\/(\d+)\/stream$/.exec(url);
+  if (m) runId = Number(m[1]);
+  else runId = (await api<{ run: Run }>(`${url}?detach=1`, { ...init, signal })).run.id;
+  let shown = 0;
+  let first = true;
+  for (;;) {
+    const s = await api<{ run: Run; text: string; done: { ok: boolean; run: Run; error?: string } | null }>(`/api/runs/${runId}`, { signal });
+    if (first) { yield { event: "run", data: JSON.stringify({ run: s.run }) }; first = false; }
+    if (s.text.length > shown) { yield { event: "delta", data: JSON.stringify({ text: s.text.slice(shown) }) }; shown = s.text.length; }
+    if (s.done) { yield { event: s.done.ok ? "done" : "error", data: JSON.stringify(s.done) }; return; }
+    await new Promise((r) => setTimeout(r, 1500));
+    if (signal.aborted) return;
+  }
+}
 function followRun(url: string, init: RequestInit) {
   liveAbort?.abort();
   const ac = new AbortController(); liveAbort = ac;
@@ -964,12 +1001,17 @@ function followRun(url: string, init: RequestInit) {
     let frame = 0;
     const paint = () => { if (!frame && card) frame = requestAnimationFrame(() => { frame = 0; $(".md", card!).innerHTML = renderMd(text); }); };
     try {
-      const res = await fetch(url, { ...init, headers: { "content-type": "application/json" }, signal: ac.signal });
-      if (!res.ok || !res.headers.get("content-type")?.includes("text/event-stream")) {
-        const b = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(b.error ?? `HTTP ${res.status}`);
+      let events: AsyncIterable<{ event: string; data: string }>;
+      if (via) events = pollRun(url, init, ac.signal);
+      else {
+        const res = await fetch(url, { ...init, headers: { "content-type": "application/json" }, signal: ac.signal });
+        if (!res.ok || !res.headers.get("content-type")?.includes("text/event-stream")) {
+          const b = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(b.error ?? `HTTP ${res.status}`);
+        }
+        events = sse(res.body!);
       }
-      for await (const { event, data } of sse(res.body!)) {
+      for await (const { event, data } of events) {
         const p = JSON.parse(data) as { text?: string; run?: Run; error?: string };
         if (event === "run" && p.run) {
           if (cur?.id !== todoId) return;
@@ -1116,12 +1158,16 @@ const loadWidget = (): Promise<void> => {
   });
   return widgetLoaded;
 };
+let chatWidget: ChatWidget | null = null;
 async function mountChat() {
   try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sub ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
   // A detail opened from ?todo= before the renderer arrived shows plain paragraphs; render it again now.
   if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
-  SpaceChat!.mount(els.chat, {
-    scope: "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
+  chatWidget?.destroy();
+  els.chat.innerHTML = "";
+  chatWidget = SpaceChat!.mount(els.chat, {
+    // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each.
+    scope: via ? `todo-${via}` : "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
     context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`),
     placeholder: "写下要做的事，或者「把明天的都推到周五」「今天先做什么」…",
     emptyText: "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
@@ -1152,8 +1198,46 @@ $("#ai-toggle").onclick = () => { els.rail.classList.add("open"); els.scrim.hidd
 $("#ai-close").onclick = closeDrawers;
 $("#menu").onclick = () => { els.side.classList.add("open"); els.scrim.hidden = false; };
 
+// ---- machines
+/** This machine and the peers running ai-todo (a hub has them), each with its open count. */
+async function loadMachines() {
+  const m = await fetch("/api/machines").then((r) => r.json() as Promise<{ local: string; peers: string[] }>, () => ({ local: "", peers: [] as string[] }));
+  const list = ["", ...(m.peers ?? [])];
+  machines = await Promise.all(list.map(async (v): Promise<Machine> => {
+    const path = `/api/todos?status=active&fields=list&limit=1`;
+    try {
+      const r = await fetch(v ? `/api/m/${encodeURIComponent(v)}${path}` : path);
+      const b = (await r.json()) as ListAnswer & { error?: string };
+      return { via: v, name: v || m.local || "本机", active: r.ok ? b.counts.active : null, error: r.ok ? null : b.error ?? `HTTP ${r.status}` };
+    } catch (e) { return { via: v, name: v || m.local || "本机", active: null, error: (e as Error).message }; }
+  }));
+  if (!machines.some((x) => x.via === via)) { via = ""; syncUrl(); }
+  renderMachines();
+}
+function renderMachines() {
+  const nav = $("#machines");
+  const many = machines.length > 1;
+  nav.hidden = !many; $("#m-label").hidden = !many;
+  $("#machine").textContent = many ? ` · ${machineName()}` : "";
+  nav.innerHTML = machines.map((x) => `<button class="view${x.via === via ? " on" : ""}" data-machine="${esc(x.via)}" title="${esc(x.error ?? "")}">${svg("chart")}<span>${esc(x.name)}${x.via ? "" : "（本机）"}</span><b${x.error ? ' class="alert"' : ""}>${x.error ? "!" : x.active ? String(x.active) : ""}</b></button>`).join("");
+}
+$("#machines").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
+  if (!b || b.dataset.machine === via) return;
+  via = b.dataset.machine ?? "";
+  liveAbort?.abort();
+  cur = null; els.detail.hidden = true; els.scrim.hidden = true;
+  filterTag = null; filterProject = null; query = ""; ($("#search") as HTMLInputElement).value = "";
+  syncUrl();
+  renderMachines();
+  closeDrawers();
+  void load().catch((err) => toast((err as Error).message));
+  void mountChat();
+});
+
 // ---- boot
 (async () => {
+  await loadMachines();
   await load();
   void mountChat();
   const wanted = Number(new URLSearchParams(location.search).get("todo"));

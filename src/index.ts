@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { KEY_RE, mimeOfKey, newKey, openStore, sniffImage, type BlobStore } from "./blobs.ts";
 import type { RecordImage } from "./types.ts";
+import { callerAllowed, envelopeOf, forwarder, machineFinder, readEnvelope, type Envelope, type Machines } from "./remote.ts";
 import index from "../web/index.html";
 import {
   chatContext, draftsFromAnswer, executeAgentPrompt, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
@@ -19,7 +20,7 @@ import {
 } from "./ai.ts";
 import { appZone, config, databasePath } from "./config.ts";
 import {
-  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getTodo,
+  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getRun, getTodo,
   listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
 } from "./db.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
@@ -43,6 +44,10 @@ export interface ServerOptions {
   /** A successful execution of an open or doing todo sends it to review (验收); false keeps its status (TODO_AUTO_REVIEW=0). */
   autoReview?: boolean;
   now?: () => Date;
+  /** This machine's SPACE_NAME, the peers running ai-todo and how to reach one; absent: this machine only. */
+  machine?: string;
+  machines?: () => Promise<Machines>;
+  forward?: (peer: string, env: Envelope) => Promise<Response>;
 }
 
 /** Request headers a proxied call carries to ai-space, and response headers it brings back; never cookies. */
@@ -300,15 +305,27 @@ export function createServer(opts: ServerOptions) {
     const todo = getTodo(db, id);
     if (!todo) return fail("no such todo", 404);
     const b = await body(req);
+    const detached = new URL(req.url).searchParams.get("detach") === "1";
     const running = runningRun(db, id);
     if (running) {
       const l = live.get(running.id);
-      if (l) return streamRun(l, req);
+      if (l) return detached ? json({ ok: true, run: l.run }) : streamRun(l, req);
       // A run left over from a crash: close it and go on.
       finishRun(db, running.id, { ok: false, output: "", error: "abandoned: the service restarted" });
     }
     const extra = String(b.extra ?? "").slice(0, 4000);
-    return streamRun(startExecution(todo, extra, tz(b.timezone)), req);
+    const l = startExecution(todo, extra, tz(b.timezone));
+    // Detached (a page on another machine, through the bus, which cannot stream): the run, then GET /api/runs/:id.
+    return detached ? json({ ok: true, run: l.run }) : streamRun(l, req);
+  };
+
+  /** One run as it stands: the text so far while it is in flight, its end once it is over. */
+  const runNow = (id: number): Response => {
+    const l = live.get(id);
+    if (l) return json({ ok: true, run: l.done?.run ?? l.run, text: l.text, done: l.done });
+    const run = getRun(db, id);
+    if (!run) return fail("no such run", 404);
+    return json({ ok: true, run, text: run.output, done: run.status === "running" ? null : { ok: run.status === "ok", run, ...(run.error ? { error: run.error } : {}) } });
   };
 
   const apply = (actions: Action[], src: Source) => {
@@ -361,6 +378,47 @@ export function createServer(opts: ServerOptions) {
 
   const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
 
+  const machine = opts.machine ?? "";
+  const machines = opts.machines ?? (async (): Promise<Machines> => ({ local: machine, peers: [], error: null }));
+  let selfPort = 0;
+
+  /** A page request for another machine: `/api/m/<peer>/<route>` goes to that machine's instance through the bus. */
+  const viaPeer = async (req: Request & { params: Record<string, string> }): Promise<Response> => {
+    const method = req.method.toUpperCase();
+    // A write must come from this app's page: a browser names its origin, and it is this host.
+    if (method !== "GET") {
+      const origin = req.headers.get("origin");
+      const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+      try { if (origin && new URL(origin).host !== host) return fail("writes must come from this app's page", 403); } catch { return fail("writes must come from this app's page", 403); }
+    }
+    const peer = req.params.peer!;
+    const { peers } = await machines();
+    if (!opts.forward || !peers.includes(peer)) return fail(`no machine ${peer} runs ai-todo`, 404);
+    const url = new URL(req.url);
+    const rest = url.pathname.slice(`/api/m/${encodeURIComponent(peer)}`.length) + url.search;
+    const env = await envelopeOf(req, rest);
+    if (env === "too-large") return fail("too large to send to another machine (about 2.9 MB at most)", 413);
+    if (!env) return fail("not found", 404);
+    return opts.forward(peer, env);
+  };
+
+  /** The bus capability `ops`: ai-todo on another space asks for one of this page's routes. */
+  const remote = async (req: Request): Promise<Response> => {
+    if (!callerAllowed(req.headers.get("x-space-caller"), "ai-todo")) return fail("only ai-todo on another space may call ops", 403);
+    let env: Envelope | null = null;
+    try { env = readEnvelope(await req.json()); } catch { /* not JSON */ }
+    if (!env) return fail("not a route of this page", 404);
+    const res = await fetch(`http://127.0.0.1:${selfPort}${env.path}`, {
+      method: env.method,
+      headers: { ...(env.contentType ? { "content-type": env.contentType } : {}), "accept-encoding": "identity" },
+      ...(env.body64 ? { body: Buffer.from(env.body64, "base64") } : {}),
+    });
+    const headers = new Headers({ "cache-control": "no-store" });
+    const type = res.headers.get("content-type");
+    if (type) headers.set("content-type", type);
+    return new Response(await res.arrayBuffer(), { status: res.status, headers });
+  };
+
   const server = Bun.serve({
     maxRequestBodySize: 61 * 1024 * 1024,
     hostname: "127.0.0.1",
@@ -372,6 +430,10 @@ export function createServer(opts: ServerOptions) {
       "/healthz": () => new Response("ok"),
       "/icon.svg": () => new Response(Bun.file(new URL("../icon.svg", import.meta.url).pathname)),
       "/api/widget": (req) => json(widget(), 200, req),
+      // The machines this page shows: this one, then the peers running ai-todo (on a hub).
+      "/api/machines": async () => json({ ok: true, ...(await machines()) }),
+      "/api/m/:peer/*": { GET: viaPeer, POST: viaPeer, PATCH: viaPeer, PUT: viaPeer, DELETE: viaPeer },
+      "/api/remote": { POST: remote },
 
       "/api/todos": {
         GET: (req) => { try { return json(listBody(new URL(req.url).searchParams), 200, req); } catch (e) { return fail((e as Error).message); } },
@@ -601,6 +663,7 @@ export function createServer(opts: ServerOptions) {
       },
       "/api/todos/:id/execute": { POST: (req) => { const id = idOf(req.params.id); return id ? execute(req, id) : fail("no such todo", 404); } },
       "/api/todos/:id/runs": { GET: (req) => { const id = idOf(req.params.id); return id ? json({ ok: true, runs: listRuns(db, id) }) : fail("no such todo", 404); } },
+      "/api/runs/:id": { GET: (req) => { const id = idOf(req.params.id); return id ? runNow(id) : fail("no such run", 404); } },
       "/api/runs/:id/stream": {
         GET: (req) => { const id = idOf(req.params.id); const l = id ? live.get(id) : undefined; return l ? streamRun(l, req) : fail("that run is not in flight", 404); },
       },
@@ -660,6 +723,7 @@ export function createServer(opts: ServerOptions) {
     },
   });
 
+  selfPort = server.port ?? 0;
   return { server, startExecution, live };
 }
 
@@ -667,7 +731,11 @@ if (import.meta.main) {
   const db = openDb(databasePath());
   const abandoned = abandonRuns(db);
   if (abandoned) log(`closed ${abandoned} run(s) left running by the last stop`);
+  const machine = process.env.SPACE_NAME?.trim() ?? "";
+  const machines = machineFinder({ apiUrl: config.spaceApiUrl, app: "ai-todo", local: machine, token: config.spaceAppToken });
+  const forward = forwarder({ apiUrl: config.spaceApiUrl, app: "ai-todo", token: config.spaceAppToken });
   const { server } = createServer({
+    machine, machines, forward,
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
     timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, webTools: config.web, autoReview: config.autoReview,
   });

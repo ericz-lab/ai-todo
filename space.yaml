@@ -39,6 +39,12 @@ agents:
 # What other apps call through ai-space (docs/events.md). The caller's name goes into each
 # todo's `created` event.
 provides:
+  # One page over every machine: ai-todo on a hub reaches this machine's list through the bus
+  # (src/remote.ts). The service itself accepts only ai-todo as the caller.
+  ops:
+    description: A request for one of ai-todo's own page routes on this machine (the list, a task, its records, plan and runs, the AI panel's context and actions), from ai-todo on another space. Body { method, path, contentType?, body64? }; answers what the route answers.
+    http: { method: POST, path: /api/remote }
+    timeout: 15m
   parse:
     description: Turn free text into task drafts with dates, priorities and tags resolved; nothing is added. Body { text, timezone? (IANA) }; answers { ok, drafts [{ title, notes?, due?, priority?, tags?, project? }] }. One model call, tens of seconds.
     http: { method: POST, path: /api/ai/parse }
