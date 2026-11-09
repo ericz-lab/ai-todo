@@ -47,7 +47,8 @@ const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? Sp
  */
 type Machine = { via: string; name: string; active: number | null; error: string | null };
 let machines: Machine[] = [];
-let via = new URLSearchParams(location.search).get("m") ?? "";
+/** `?m=` first, else the machine picked last in this browser. */
+let via = new URLSearchParams(location.search).get("m") ?? (() => { try { return localStorage.getItem("todo-machine") ?? ""; } catch { return ""; } })();
 /** A page route on the machine shown: the API and the record pictures; the chat stays on this machine. */
 const on = (path: string): string => (via && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(via)}${path}` : path);
 const machineName = () => machines.find((m) => m.via === via)?.name ?? via;
@@ -1225,6 +1226,7 @@ $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
   if (!b || b.dataset.machine === via) return;
   via = b.dataset.machine ?? "";
+  try { if (via) localStorage.setItem("todo-machine", via); else localStorage.removeItem("todo-machine"); } catch { /* private mode */ }
   liveAbort?.abort();
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
   filterTag = null; filterProject = null; query = ""; ($("#search") as HTMLInputElement).value = "";
