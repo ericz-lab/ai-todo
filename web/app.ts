@@ -424,6 +424,8 @@ function renderKpis() {
 function weekStat(done: number | null): string {
   const head = `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${L("近 7 天完成", "Done, last 7 days")}</span>`;
   if (!trend || done === null) return `<div class="stat st-week">${head}<span class="sp-fig">–</span><span class="st-note">${L("完成记录读取失败", "Could not read completions")}</span></div>`;
+  // A machine that has finished nothing has no trend block at all: zero, not a crash.
+  if (!trend.length) return `<div class="stat st-week">${head}<span class="sp-fig">0</span>${EN ? "" : `<span class="sp-unit">项</span>`}<span class="st-note">${L("这 7 天还没有完成的任务", "Nothing finished in the last 7 days")}</span></div>`;
   const max = Math.max(1, ...trend.map((p) => p.v ?? 0));
   const best = trend.reduce((a, p) => ((p.v ?? 0) > (a.v ?? 0) ? p : a), trend[0]!);
   const md = (t: string) => `${Number(t.slice(5, 7))}/${Number(t.slice(8, 10))}`;
