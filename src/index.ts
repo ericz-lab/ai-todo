@@ -428,7 +428,7 @@ export function createServer(opts: ServerOptions) {
     routes: {
       "/": opts.web === false ? () => new Response("no page", { status: 404 }) : index,
       "/healthz": () => new Response("ok"),
-      "/icon.svg": () => new Response(Bun.file(new URL("../icon.svg", import.meta.url).pathname)),
+      "/icon.png": () => new Response(Bun.file(new URL("../icon.png", import.meta.url).pathname)),
       "/api/widget": (req) => json(widget(), 200, req),
       // The machines this page shows: this one, then the peers running ai-todo (on a hub).
       "/api/machines": async () => json({ ok: true, ...(await machines()) }),

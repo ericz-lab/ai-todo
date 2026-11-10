@@ -4,7 +4,7 @@ spec: 1
 name: ai-todo
 title: Todo
 description: A todo list with one AI entry that turns free text into tasks, changes the list on request and plans the day; a task can be handed to the AI to do.
-icon: icon.svg
+icon: icon.png
 url: /?lang={lang}&accent={accent}
 status: active
 repo: https://github.com/ericz-lab/ai-todo.git
