@@ -37,6 +37,31 @@ declare const SpaceChat: {
 } | undefined;
 
 const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document): T => root.querySelector(sel) as T;
+
+// ---- language: 中 or EN, set on html[lang] by the head script (?lang= from the panel → the saved choice → the browser)
+const EN = document.documentElement.lang === "en";
+/** Every string the page writes, in both languages. */
+const L = (zh: string, en: string): string => (EN ? en : zh);
+// The shell is written in Chinese with the English beside it: data-en (text), data-en-title, data-en-aria, data-en-ph.
+if (EN) {
+  document.querySelectorAll<HTMLElement>("[data-en]").forEach((x) => { x.textContent = x.dataset.en!; });
+  document.querySelectorAll<HTMLElement>("[data-en-title]").forEach((x) => { x.title = x.dataset.enTitle!; });
+  document.querySelectorAll<HTMLElement>("[data-en-aria]").forEach((x) => { x.setAttribute("aria-label", x.dataset.enAria!); });
+  document.querySelectorAll<HTMLElement>("[data-en-ph]").forEach((x) => { x.setAttribute("placeholder", x.dataset.enPh!); });
+}
+document.querySelectorAll<HTMLElement>("#lang [data-lang]").forEach((b) => {
+  b.setAttribute("aria-pressed", String((b.dataset.lang === "en") === EN));
+  // A switch reloads the page in the other language (the choice is kept in this browser and in the address).
+  b.onclick = () => {
+    if ((b.dataset.lang === "en") === EN) return;
+    try { localStorage.setItem("todo-lang", b.dataset.lang!); } catch { /* private mode */ }
+    const u = new URL(location.href);
+    u.searchParams.set("lang", b.dataset.lang!);
+    location.replace(u.toString());
+  };
+});
+/** Weekday names: 日一二三四五六 in Chinese, short English names. */
+const WEEKDAY = EN ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] : [..."日一二三四五六"];
 const esc = (s: unknown): string => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Markdown through the space's renderer; plain paragraphs when the widget (and so ai-space) is not there. */
 const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? SpaceChat.renderMd(src) : String(src ?? "").split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join(""));
@@ -61,7 +86,7 @@ const chatVia = () => (allMode() ? "" : via);
 /** A page route on a machine (the one shown by default): the API and the record pictures; the chat stays on this machine. */
 const on = (path: string, m = at()): string => (m && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(m)}${path}` : path);
 const nameOf = (m: string) => machines.find((x) => x.via === m)?.name ?? m;
-const machineName = () => (allMode() ? "全部机器" : nameOf(via));
+const machineName = () => (allMode() ? L("全部机器", "All machines") : nameOf(via));
 
 const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T> => {
   const r = await fetch(on(path, m), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
@@ -70,7 +95,7 @@ const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T
   return body;
 };
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-const PRI = ["", "低", "中", "高"];
+const PRI = EN ? ["", "Low", "Med", "High"] : ["", "低", "中", "高"];
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 /** One kit toast at a time (`.sp-toast`), shown for a few seconds. */
 const toast = (text: string) => {
@@ -93,33 +118,34 @@ const isLate = (t: { due: string | null }) => !!t.due && (t.due.length > 10 ? t.
 const fmtDue = (due: string) => {
   const day = dayOf(due), today = todayStr();
   const time = due.length > 10 ? ` ${due.slice(11)}` : "";
-  if (day === today) return `今天${time}`;
-  if (day === addDays(1)) return `明天${time}`;
-  if (day === addDays(-1)) return `昨天${time}`;
+  if (day === today) return L(`今天${time}`, `Today${time}`);
+  if (day === addDays(1)) return L(`明天${time}`, `Tomorrow${time}`);
+  if (day === addDays(-1)) return L(`昨天${time}`, `Yesterday${time}`);
   const d = new Date(`${day}T00:00`);
-  const wd = "日一二三四五六"[d.getDay()];
+  const wd = WEEKDAY[d.getDay()];
   const sameYear = day.slice(0, 4) === today.slice(0, 4);
-  return `${sameYear ? "" : `${day.slice(0, 4)}/`}${d.getMonth() + 1}/${d.getDate()} 周${wd}${time}`;
+  const md = `${sameYear ? "" : `${day.slice(0, 4)}/`}${d.getMonth() + 1}/${d.getDate()}`;
+  return EN ? `${wd} ${md}${time}` : `${md} 周${wd}${time}`;
 };
 const fmtAgo = (iso: string) => {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 60) return L("刚刚", "just now");
+  if (diff < 3600) return L(`${Math.floor(diff / 60)} 分钟前`, `${Math.floor(diff / 60)} min ago`);
+  if (diff < 86400) return L(`${Math.floor(diff / 3600)} 小时前`, `${Math.floor(diff / 3600)} h ago`);
   const d = new Date(iso);
   return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
 // ---- theme: follow the system → light → dark, saved in this browser; the head script applied it before first paint
 type ThemeMode = "system" | "light" | "dark";
-const THEME_LABEL: Record<ThemeMode, string> = { system: "跟随系统", light: "浅色", dark: "深色" };
+const THEME_LABEL: Record<ThemeMode, string> = EN ? { system: "System", light: "Light", dark: "Dark" } : { system: "跟随系统", light: "浅色", dark: "深色" };
 const applyTheme = (mode: ThemeMode, save = true) => {
   const root = document.documentElement;
   if (mode === "system") delete root.dataset.theme; else root.dataset.theme = mode;
   root.dataset.mode = mode;
   if (save) { try { if (mode === "system") localStorage.removeItem("todo-theme"); else localStorage.setItem("todo-theme", mode); } catch { /* private mode */ } }
   $("#theme-label").textContent = THEME_LABEL[mode];
-  $("#theme").title = `主题：${THEME_LABEL[mode]}，点按切换`;
+  $("#theme").title = L(`主题：${THEME_LABEL[mode]}，点按切换`, `Theme: ${THEME_LABEL[mode]}, click to change`);
 };
 /** Stroke icons (24px box) drawn by the page; the static ones live in index.html. */
 const ICON = {
@@ -144,7 +170,9 @@ $("#theme").onclick = () => applyTheme(({ system: "light", light: "dark", dark: 
 
 // ---- state
 type View = "today" | "upcoming" | "all" | "review" | "done" | "deferred";
-const VIEW_TITLE: Record<View, string> = { all: "全部", today: "今天", upcoming: "即将", review: "验收", deferred: "暂不处理", done: "已完成" };
+const VIEW_TITLE: Record<View, string> = EN
+  ? { all: "All", today: "Today", upcoming: "Upcoming", review: "Review", deferred: "Deferred", done: "Done" }
+  : { all: "全部", today: "今天", upcoming: "即将", review: "验收", deferred: "暂不处理", done: "已完成" };
 const VIEWS = Object.keys(VIEW_TITLE) as View[];
 /** `/?view=review` opens that view (the panel card and the review notification link there). */
 const viewParam = new URLSearchParams(location.search).get("view") as View | null;
@@ -217,7 +245,7 @@ async function load() {
     : [{ m: via, p: await from(via) }];
   if (seq !== loadSeq) return;
   const failed = parts.filter((x) => !x.p).map((x) => nameOf(x.m));
-  if (failed.length) toast(`读取失败：${failed.join("、")}`);
+  if (failed.length) toast(L(`读取失败：${failed.join("、")}`, `Could not read: ${failed.join(", ")}`));
   const ok = parts.flatMap((x) => (x.p ? [{ m: x.m, r: x.p[0], a: x.p[1], w: x.p[2] }] : []));
   todos = ok.flatMap((x) => tagged(x.r.todos, x.m));
   if (allMode() && view === "done") todos.sort(byDone);
@@ -258,7 +286,7 @@ async function checkRuns() {
 async function loadMore(btn: HTMLButtonElement) {
   if (!doneCursors.size || view !== "done") return;
   const seq = loadSeq;
-  btn.disabled = true; btn.textContent = "加载中…";
+  btn.disabled = true; btn.textContent = L("加载中…", "Loading…");
   try {
     const pages = await Promise.all([...doneCursors].map(([m, before]) => api<ListAnswer>(`/api/todos?${listQuery({ before })}`, {}, m).then((r) => ({ m, r }))));
     if (seq !== loadSeq) return;
@@ -269,7 +297,7 @@ async function loadMore(btn: HTMLButtonElement) {
     }
     if (allMode()) todos.sort(byDone);
     renderList();
-  } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = "加载更多"; }
+  } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = L("加载更多", "Load more"); }
 }
 /** The address keeps the view and the machine, so a link reopens the same list. */
 const syncUrl = () => {
@@ -292,18 +320,18 @@ function renderSide() {
     const c = $(sel);
     c.innerHTML = v ? `${dot ? `<span class="sp-dot ${dot}" aria-hidden="true"></span>` : ""}${v}` : "";
     c.title = word;
-    if (word) c.setAttribute("aria-label", `${v}，${word}`); else c.removeAttribute("aria-label");
+    if (word) c.setAttribute("aria-label", L(`${v}，${word}`, `${v}, ${word}`)); else c.removeAttribute("aria-label");
   };
-  count("#n-today", n.today, late ? "bad" : "", late ? `${late} 项已过期` : "");
+  count("#n-today", n.today, late ? "bad" : "", late ? L(`${late} 项已过期`, `${late} overdue`) : "");
   count("#n-upcoming", n.upcoming);
   count("#n-all", n.all);
   // Every stage's size, whatever view is open; finished work waiting for the person stands out.
-  count("#n-review", counts?.review ?? 0, counts?.review ? "warn" : "", counts?.review ? `${counts.review} 项待验收` : "");
+  count("#n-review", counts?.review ?? 0, counts?.review ? "warn" : "", counts?.review ? L(`${counts.review} 项待验收`, `${counts.review} awaiting review`) : "");
   count("#n-deferred", counts?.deferred ?? 0);
   count("#n-done", counts?.done ?? 0);
   document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view && !filterProject && !filterTag)));
   const items = (list: { key: string; n: number }[], on: string | null) =>
-    list.length ? list.map((x) => `<li><button type="button" class="sp-nitem" data-key="${esc(x.key)}" aria-pressed="${on === x.key}"><span class="nl">${esc(x.key)}</span><span class="sp-nc">${x.n}</span></button></li>`).join("") : `<li class="none">无</li>`;
+    list.length ? list.map((x) => `<li><button type="button" class="sp-nitem" data-key="${esc(x.key)}" aria-pressed="${on === x.key}"><span class="nl">${esc(x.key)}</span><span class="sp-nc">${x.n}</span></button></li>`).join("") : `<li class="none">${L("无", "None")}</li>`;
   $("#projects").innerHTML = items(projects.map((p) => ({ key: p.project, n: p.n })), filterProject);
   $("#tags").innerHTML = items(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag);
   $("#project-list").innerHTML = projects.map((p) => `<option value="${esc(p.project)}">`).join("");
@@ -313,22 +341,22 @@ function renderSide() {
 document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => { b.onclick = () => { setView(b.dataset.view as View); closeDrawers(); void load(); }; });
 
 // ---- header and toolbar
-const longDay = (d = new Date()) => `${d.getMonth() + 1}月${d.getDate()}日 周${"日一二三四五六"[d.getDay()]}`;
+const longDay = (d = new Date()) => (EN ? `${WEEKDAY[d.getDay()]}, ${d.toLocaleDateString("en", { month: "short", day: "numeric" })}` : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAY[d.getDay()]}`);
 /** The segmented filter applies to the open views; the archive views (review, deferred, done) are one state each. */
 const segApplies = () => view === "all" || view === "today" || view === "upcoming";
 function renderHead() {
   // The heading names the view and the day; the counts are in the left column and the stats tile, not repeated here.
   $("#view-title").textContent = VIEW_TITLE[view];
   $("#today-chip").textContent = longDay();
-  document.title = `${VIEW_TITLE[view]} · AI 待办`;
+  document.title = `${VIEW_TITLE[view]} · ${L("AI 待办", "AI Todo")}`;
   $("#seg").hidden = !segApplies();
   $("#seg").querySelectorAll<HTMLElement>("[data-seg]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.seg === seg)));
   const f: string[] = [];
   const chip = (k: string, icon: keyof typeof ICON, label: string, value: string) =>
-    `<button type="button" class="sp-chip filter" data-clear="${k}" title="清除这个筛选">${svg(icon)}<i>${label}</i>${esc(value)}${svg("x")}</button>`;
-  if (filterProject) f.push(chip("project", "folder", "项目", filterProject));
-  if (filterTag) f.push(chip("tag", "hash", "标签", filterTag));
-  if (query) f.push(chip("query", "search", "搜索", query));
+    `<button type="button" class="sp-chip filter" data-clear="${k}" title="${L("清除这个筛选", "Clear this filter")}">${svg(icon)}<i>${label}</i>${esc(value)}${svg("x")}</button>`;
+  if (filterProject) f.push(chip("project", "folder", L("项目", "Project"), filterProject));
+  if (filterTag) f.push(chip("tag", "hash", L("标签", "Tag"), filterTag));
+  if (query) f.push(chip("query", "search", L("搜索", "Search"), query));
   $("#filters").innerHTML = f.join("");
   $("#filters").querySelectorAll<HTMLElement>("[data-clear]").forEach((b) => {
     b.onclick = () => {
@@ -382,32 +410,35 @@ function renderKpis() {
   // Today's share already finished: what was finished today over that plus what is still on today's list.
   const share = todayN.length + doneToday ? Math.round((doneToday / (todayN.length + doneToday)) * 100) : 0;
   const label = (text: string) => `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${text}</span>`;
-  const fig = (v: string) => `<span class="sp-fig">${v}</span><span class="sp-unit">项</span>`;
-  const todayStat = `<div class="stat st-today" title="今天到期 ${dueToday} 项 · ${doing ? `进行中 ${doing} 项` : "没有进行中"}">${label("今天")}${fig(String(todayN.length))}
-      <span class="sp-meter" role="img" aria-label="今天完成 ${doneToday} 项"><i style="--v:${share}%"></i></span>
-      <span class="st-note">${doneToday} 已完成</span><span class="st-note st-more">到期 ${dueToday} · ${doing ? `进行中 ${doing}` : "没有进行中"}</span></div>`;
+  const fig = (v: string) => `<span class="sp-fig">${v}</span>${EN ? "" : `<span class="sp-unit">项</span>`}`;
+  const todayTitle = L(`今天到期 ${dueToday} 项 · ${doing ? `进行中 ${doing} 项` : "没有进行中"}`, `${dueToday} due today · ${doing ? `${doing} in progress` : "nothing in progress"}`);
+  const todayStat = `<div class="stat st-today" title="${esc(todayTitle)}">${label(L("今天", "Today"))}${fig(String(todayN.length))}
+      <span class="sp-meter" role="img" aria-label="${esc(L(`今天完成 ${doneToday} 项`, `${doneToday} done today`))}"><i style="--v:${share}%"></i></span>
+      <span class="st-note">${L(`${doneToday} 已完成`, `${doneToday} done`)}</span><span class="st-note st-more">${L(`到期 ${dueToday} · ${doing ? `进行中 ${doing}` : "没有进行中"}`, `Due ${dueToday} · ${doing ? `in progress ${doing}` : "nothing in progress"}`)}</span></div>`;
   // Overdue is a state, so it is a badge with its word: the count and the earliest one; nothing late, a quiet note.
   const lateStat = late.length
-    ? `<div class="stat st-late"><span class="sp-badge bad st-first" title="最早：${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}"><span class="tx">已过期 ${late.length} 项 · 最早 ${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}</span></span></div>`
-    : `<div class="stat st-late st-more"><span class="st-note">没有逾期任务</span></div>`;
+    ? `<div class="stat st-late"><span class="sp-badge bad st-first" title="${L("最早：", "Earliest: ")}${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}"><span class="tx">${L(`已过期 ${late.length} 项 · 最早`, `${late.length} overdue · earliest`)} ${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}</span></span></div>`
+    : `<div class="stat st-late st-more"><span class="st-note">${L("没有逾期任务", "Nothing overdue")}</span></div>`;
   $("#kpis").innerHTML = `<div class="stats-in">${todayStat}${lateStat}${weekStat(done)}</div>`;
 }
 /** The week's completions: the figure, then one bar a day with its day under it (today in the accent). */
 function weekStat(done: number | null): string {
-  const head = `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>近 7 天完成</span>`;
-  if (!trend || done === null) return `<div class="stat st-week">${head}<span class="sp-fig">–</span><span class="st-note">完成记录读取失败</span></div>`;
+  const head = `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${L("近 7 天完成", "Done, last 7 days")}</span>`;
+  if (!trend || done === null) return `<div class="stat st-week">${head}<span class="sp-fig">–</span><span class="st-note">${L("完成记录读取失败", "Could not read completions")}</span></div>`;
   const max = Math.max(1, ...trend.map((p) => p.v ?? 0));
   const best = trend.reduce((a, p) => ((p.v ?? 0) > (a.v ?? 0) ? p : a), trend[0]!);
   const md = (t: string) => `${Number(t.slice(5, 7))}/${Number(t.slice(8, 10))}`;
-  const wd = (t: string) => "日一二三四五六"[new Date(`${t}T00:00`).getDay()];
+  const wd = (t: string) => WEEKDAY[new Date(`${t}T00:00`).getDay()]!.slice(0, EN ? 2 : 1);
   const lateN = active.filter(isLate).length;
-  const text = !done ? "这 7 天还没有完成的任务。挑一件小的先做掉。"
-    : `这 7 天完成了 ${done} 项，${best.t === trend.at(-1)!.t ? "今天" : md(best.t)} 最多，${best.v} 项。${lateN ? `还有 ${lateN} 项过期没处理。` : ""}`;
+  const bestDay = best.t === trend.at(-1)!.t ? L("今天", "today") : md(best.t);
+  const text = !done ? L("这 7 天还没有完成的任务。挑一件小的先做掉。", "Nothing finished in the last 7 days. Pick a small one and get it done.")
+    : L(`这 7 天完成了 ${done} 项，${bestDay} 最多，${best.v} 项。${lateN ? `还有 ${lateN} 项过期没处理。` : ""}`,
+      `${done} done in the last 7 days, the most on ${bestDay} (${best.v}).${lateN ? ` ${lateN} overdue still waiting.` : ""}`);
   const last = trend.length - 1;
-  return `<div class="stat st-week" title="${esc(text)}">${head}<span class="sp-fig">${done}</span><span class="sp-unit">项</span>
-      <div class="week" role="img" aria-label="${esc(text)} 每天：${trend.map((p) => `${md(p.t)} ${p.v ?? 0} 项`).join("，")}">
-        ${trend.map((p, i) => `<span class="day" title="${md(p.t)}：完成 ${p.v ?? 0} 项"><i class="b${i === last ? " now" : ""}" style="--h:${Math.max(2, Math.round(((p.v ?? 0) / max) * 24))}px"></i><small>${i === last ? "今" : wd(p.t)}</small></span>`).join("")}
-      </div><span class="st-note st-more">日均 ${(done / 7).toFixed(1)}</span></div>`;
+  return `<div class="stat st-week" title="${esc(text)}">${head}<span class="sp-fig">${done}</span>${EN ? "" : `<span class="sp-unit">项</span>`}
+      <div class="week" role="img" aria-label="${esc(text)} ${L("每天：", "Per day: ")}${trend.map((p) => L(`${md(p.t)} ${p.v ?? 0} 项`, `${md(p.t)} ${p.v ?? 0}`)).join(L("，", ", "))}">
+        ${trend.map((p, i) => `<span class="day" title="${L(`${md(p.t)}：完成 ${p.v ?? 0} 项`, `${md(p.t)}: ${p.v ?? 0} done`)}"><i class="b${i === last ? " now" : ""}" style="--h:${Math.max(2, Math.round(((p.v ?? 0) / max) * 24))}px"></i><small>${i === last && !EN ? "今" : wd(p.t)}</small></span>`).join("")}
+      </div><span class="st-note st-more">${L("日均", "Daily mean")} ${(done / 7).toFixed(1)}</span></div>`;
 }
 
 // ---- the list
@@ -427,12 +458,12 @@ const titleOf = (id: number, m?: string) => (todos.find((t) => t.id === id && t.
 function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
   const tops = nest();
-  if (view === "deferred") return [{ key: "deferred", title: "暂不处理", items: tops }];
-  if (view === "review") return [{ key: "review", title: "待验收", items: tops }];
-  if (view === "done") return [{ key: "done", title: "已完成", items: tops }];
+  if (view === "deferred") return [{ key: "deferred", title: L("暂不处理", "Deferred"), items: tops }];
+  if (view === "review") return [{ key: "review", title: L("待验收", "Awaiting review"), items: tops }];
+  if (view === "done") return [{ key: "done", title: L("已完成", "Done"), items: tops }];
   const g: Record<string, Group> = {
-    doing: { key: "doing", title: "进行中", items: [] }, late: { key: "late", title: "已过期", late: true, items: [] }, today: { key: "today", title: "今天", items: [] },
-    tomorrow: { key: "tomorrow", title: "明天", items: [] }, week: { key: "week", title: "本周", items: [] }, later: { key: "later", title: "以后", items: [] }, none: { key: "none", title: "未定日期", items: [] },
+    doing: { key: "doing", title: L("进行中", "In progress"), items: [] }, late: { key: "late", title: L("已过期", "Overdue"), late: true, items: [] }, today: { key: "today", title: L("今天", "Today"), items: [] },
+    tomorrow: { key: "tomorrow", title: L("明天", "Tomorrow"), items: [] }, week: { key: "week", title: L("本周", "This week"), items: [] }, later: { key: "later", title: L("以后", "Later"), items: [] }, none: { key: "none", title: L("未定日期", "No date"), items: [] },
   };
   for (const t of tops) {
     const day = t.due ? dayOf(t.due) : null;
@@ -444,21 +475,31 @@ function groups(): Group[] {
 }
 /** The add row at the foot of an open view: a todo typed there lands on the view's day and the project and tag filtered on. */
 const addDefaults = () => ({ due: view === "today" ? todayStr() : view === "upcoming" ? addDays(1) : null, project: filterProject, tags: filterTag ? [filterTag] : [] });
-const addHint = () => `${view === "today" ? "添加到今天" : view === "upcoming" ? "添加到明天" : "添加待办"}${allMode() ? `（${nameOf("")}）` : ""}，回车保存`;
+const addHint = () => EN
+  ? `${view === "today" ? "Add for today" : view === "upcoming" ? "Add for tomorrow" : "Add a todo"}${allMode() ? ` (${nameOf("")})` : ""}, Enter to save`
+  : `${view === "today" ? "添加到今天" : view === "upcoming" ? "添加到明天" : "添加待办"}${allMode() ? `（${nameOf("")}）` : ""}，回车保存`;
 function renderList() {
   const gs = groups();
   const adds = segApplies();
-  const addRow = adds ? `<label class="add-row"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="sp-sr">新建待办</span><input id="add-input" placeholder="${esc(addHint())}" maxlength="300" autocomplete="off"></label>` : "";
+  const addRow = adds ? `<label class="add-row"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="sp-sr">${L("新建待办", "New todo")}</span><input id="add-input" placeholder="${esc(addHint())}" maxlength="300" autocomplete="off"></label>` : "";
   if (!gs.length) {
-    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : seg === "doing" && adds ? "没有进行中的任务。" : seg === "ai" && adds ? "这个页面没有正在进行的 AI 执行。在任务详情里点「AI 执行」开始一次。" : view === "review" ? "没有等待验收的任务。AI 或你做完一项后提交验收，会出现在这里。" : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
-    els.list.innerHTML = `<div class="sp-state"><span class="ico" aria-hidden="true">${svg(query ? "search" : "check")}</span><b>${query ? "没有结果" : view === "done" || view === "review" ? "空" : "轻松"}</b><p>${hint}</p></div>${addRow}`;
+    const hint = query ? L(`没有和「${esc(query)}」匹配的任务。`, `No task matches “${esc(query)}”.`)
+      : seg === "doing" && adds ? L("没有进行中的任务。", "Nothing in progress.")
+      : seg === "ai" && adds ? L("这个页面没有正在进行的 AI 执行。在任务详情里点「AI 执行」开始一次。", "No AI run going from this page. Open a task and press “Run with AI” to start one.")
+      : view === "review" ? L("没有等待验收的任务。AI 或你做完一项后提交验收，会出现在这里。", "Nothing awaits review. When the AI or you finish a task and submit it, it shows here.")
+      : view === "deferred" ? L("没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。", "Nothing deferred. Defer a task from its detail and bring it back from here.")
+      : view === "today" ? L("今天没有安排。看看「即将」，或在右边写下要做的事。", "Nothing planned today. Look at Upcoming, or write what to do on the right.")
+      : view === "upcoming" ? L("接下来几天没有安排。", "Nothing planned for the next days.")
+      : view === "done" ? L("还没有完成的任务。", "Nothing finished yet.")
+      : L("清单是空的。在右边写点什么，让 AI 拆成任务。", "The list is empty. Write something on the right and the AI turns it into tasks.");
+    els.list.innerHTML = `<div class="sp-state"><span class="ico" aria-hidden="true">${svg(query ? "search" : "check")}</span><b>${query ? L("没有结果", "No results") : view === "done" || view === "review" ? L("空", "Empty") : L("轻松", "All clear")}</b><p>${hint}</p></div>${addRow}`;
     bindAdd();
     return;
   }
   const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(keyOf(t.id, t.m))?.length ?? 0), 0), 0);
   // The done list pages: how much of it is shown, and the next page. Elsewhere the count is in the left column already.
-  const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button type="button" class="sp-btn sm" id="load-more">加载更多</button>` : ""}<span>已显示 ${total} / ${doneTotal} 项</span></div>` : "";
-  els.list.innerHTML = `<div class="cols" aria-hidden="true"><span></span><span>待办</span><span>截止</span><span>优先</span><span class="c-proj-h">项目</span><span>状态</span></div>`
+  const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button type="button" class="sp-btn sm" id="load-more">${L("加载更多", "Load more")}</button>` : ""}<span>${L(`已显示 ${total} / ${doneTotal} 项`, `Showing ${total} of ${doneTotal}`)}</span></div>` : "";
+  els.list.innerHTML = `<div class="cols" aria-hidden="true"><span></span><span>${L("待办", "Todo")}</span><span>${L("截止", "Due")}</span><span>${L("优先", "Priority")}</span><span class="c-proj-h">${L("项目", "Project")}</span><span>${L("状态", "State")}</span></div>`
     + gs.map((g) => `
     <div class="grp" role="group" aria-label="${esc(g.title)}">
       <div class="sp-gh${g.late ? " late" : ""}">${g.title}<span class="n">${g.items.length}</span></div>
@@ -499,7 +540,7 @@ function bindAdd() {
     try {
       await api("/api/todos", { method: "POST", body: JSON.stringify({ title, source: "manual", ...addDefaults() }) }, allMode() ? "" : via);
       input.value = "";
-      toast("已添加");
+      toast(L("已添加", "Added"));
       await load();
     } catch (err) { toast((err as Error).message); input.disabled = false; return; }
     els.list.querySelector<HTMLInputElement>("#add-input")?.focus();
@@ -515,22 +556,22 @@ $("#new-todo").onclick = async () => {
 };
 /** A row's state in words: the badge, and for a task in review the verdict buttons. */
 function statusHtml(t: Item, late: boolean): string {
-  if (t.status === "review") return `<span class="sp-badge warn">待验收</span>`;
-  if (rowRunning(t)) return `<span class="sp-badge ai live">AI 执行中</span>`;
-  if (t.status === "doing") return `<span class="sp-badge run">进行中</span>`;
-  if (late) return `<span class="sp-badge bad">已过期</span>`;
-  if (t.status === "deferred") return `<span class="sp-badge off">暂不处理</span>`;
-  if (t.status === "done") return `<span class="sp-badge ok">已完成</span>`;
+  if (t.status === "review") return `<span class="sp-badge warn">${L("待验收", "In review")}</span>`;
+  if (rowRunning(t)) return `<span class="sp-badge ai live">${L("AI 执行中", "AI running")}</span>`;
+  if (t.status === "doing") return `<span class="sp-badge run">${L("进行中", "In progress")}</span>`;
+  if (late) return `<span class="sp-badge bad">${L("已过期", "Overdue")}</span>`;
+  if (t.status === "deferred") return `<span class="sp-badge off">${L("暂不处理", "Deferred")}</span>`;
+  if (t.status === "done") return `<span class="sp-badge ok">${L("已完成", "Done")}</span>`;
   return "";
 }
 function rowHtml(t: Item, nested = false): string {
   const line: string[] = [];
   const open = t.status !== "done" && t.status !== "deferred" && t.status !== "review";
   if (t.m !== undefined) line.push(`<span class="mach">${esc(nameOf(t.m))}</span>`);
-  if (t.subtasks.total) line.push(`<span class="subp"><span class="sp-meter" aria-hidden="true"><i style="--v:${Math.round((t.subtasks.done / t.subtasks.total) * 100)}%"></i></span>子任务 ${t.subtasks.done}/${t.subtasks.total}</span>`);
+  if (t.subtasks.total) line.push(`<span class="subp"><span class="sp-meter" aria-hidden="true"><i style="--v:${Math.round((t.subtasks.done / t.subtasks.total) * 100)}%"></i></span>${L("子任务", "Subtasks")} ${t.subtasks.done}/${t.subtasks.total}</span>`);
   if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId, t.m) ?? `#${t.parentId}`)}`);
   if (t.tags.length) line.push(t.tags.map((tag) => `#${esc(tag)}`).join(" "));
-  if (t.status === "done" && t.doneAt) line.push(`完成于 ${esc(fmtAgo(t.doneAt))}`);
+  if (t.status === "done" && t.doneAt) line.push(`${L("完成于", "Done")} ${esc(fmtAgo(t.doneAt))}`);
   if (t.notesExcerpt) line.push(esc(t.notesExcerpt.slice(0, 80)));
   const late = !!t.due && isLate(t) && open;
   const due = !t.due ? `<span class="dash">—</span>`
@@ -538,13 +579,13 @@ function rowHtml(t: Item, nested = false): string {
   const pri = t.priority ? `<span class="sp-chip pri p${t.priority}">${PRI[t.priority]}</span>` : `<span class="dash">—</span>`;
   const review = t.status === "review";
   return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}"${t.m !== undefined ? ` data-m="${esc(t.m)}"` : ""} tabindex="0">
-    ${checkHtml(t.status === "done", `完成 ${t.title}`)}
+    ${checkHtml(t.status === "done", `${L("完成", "Done:")} ${t.title}`)}
     <div class="t"><span class="title">${esc(t.title)}</span><span class="line">${line.join(" · ")}</span></div>
     <div class="c-due">${due}</div>
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
-    <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="验收通过，标为完成">通过</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="验收不通过，写明原因后退回">退回</button></span>` : ""}</div>
-    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="交给 AI 智能体执行（完整模式，不是对话）"><span class="spark" aria-hidden="true">✦</span>执行</button><button type="button" class="sp-btn sm" data-op="edit">详情</button></div>`}
+    <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="${L("验收通过，标为完成", "Accept and mark done")}">${L("通过", "Accept")}</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="${L("验收不通过，写明原因后退回", "Not accepted: say why and send it back")}">${L("退回", "Send back")}</button></span>` : ""}</div>
+    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行（完整模式，不是对话）", "Hand it to an AI agent to do (full mode, not a chat)")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
 async function setStatus(id: number, status: Status) {
@@ -555,7 +596,7 @@ async function setStatus(id: number, status: Status) {
 async function verdict(id: number, v: "accept" | "reject", reason?: string): Promise<boolean> {
   try {
     await api(`/api/todos/${id}/review`, { method: "POST", body: JSON.stringify({ verdict: v, reason, source: "manual" }) });
-    toast(v === "accept" ? "验收通过，已完成" : "已退回，原因已写入操作记录");
+    toast(v === "accept" ? L("验收通过，已完成", "Accepted and done") : L("已退回，原因已写入操作记录", "Sent back; the reason is in the operation records"));
     if (cur?.id === id) await openDetail(id); else await load();
     return true;
   } catch (e) { toast((e as Error).message); await load(); return false; }
@@ -609,8 +650,8 @@ function fillDetail(t: Todo) {
   d.done.checked = t.status === "done"; d.title.value = t.title; d.due.value = t.due ? (t.due.length > 10 ? t.due : `${t.due}T09:00`) : "";
   d.due.dataset.dayOnly = t.due && t.due.length === 10 ? "1" : "";
   d.priority.value = String(t.priority); d.project.value = t.project ?? ""; d.tags.value = t.tags.join(", "); d.notes.value = t.notes;
-  d.doing.textContent = t.status === "doing" ? "返回待办" : "开始做";
-  d.defer.textContent = t.status === "deferred" ? "恢复待办" : "暂不处理";
+  d.doing.textContent = t.status === "doing" ? L("返回待办", "Back to open") : L("开始做", "Start");
+  d.defer.textContent = t.status === "deferred" ? L("恢复待办", "Restore") : L("暂不处理", "Defer");
   d.defer.hidden = t.status === "done" || t.status === "dropped" || t.status === "review";
   d.doing.hidden = t.status === "deferred" || t.status === "review";
   d.review.hidden = t.status !== "open" && t.status !== "doing";
@@ -681,8 +722,8 @@ function showPlan(mode: "view" | "edit") {
   plan.mode = mode;
   const editing = mode === "edit";
   plan.text.hidden = !editing; plan.read.hidden = editing;
-  plan.editBtn.textContent = editing ? "完成" : "编辑";
-  plan.editBtn.title = editing ? "保存并回到只读" : "编辑方案";
+  plan.editBtn.textContent = editing ? L("完成", "Done") : L("编辑", "Edit");
+  plan.editBtn.title = editing ? L("保存并回到只读", "Save and go back to reading") : L("编辑方案", "Edit the plan");
   if (editing) { sizePlan(); return; }
   const has = !!plan.text.value.trim();
   plan.view.innerHTML = has ? renderMd(plan.text.value) : "";
@@ -704,7 +745,7 @@ function editPlan() {
 /** 完成: save what is pending, then back to read-only; a conflict keeps the editor until it is resolved in the bar. */
 async function finishPlan() {
   await flushPlan();
-  if (plan.conflict) { toast("先处理方案冲突"); plan.text.focus(); return; }
+  if (plan.conflict) { toast(L("先处理方案冲突", "Resolve the plan conflict first")); plan.text.focus(); return; }
   showPlan("view");
   plan.editBtn.focus();
 }
@@ -724,7 +765,7 @@ plan.full.addEventListener("close", () => { if (plan.mode === "view" && !els.det
 function schedulePlan() {
   plan.dirty = true;
   if (plan.conflict) return;   // nothing is saved until the person chooses in the bar
-  plan.state.textContent = "未保存";
+  plan.state.textContent = L("未保存", "Unsaved");
   clearTimeout(plan.timer);
   plan.timer = setTimeout(() => void flushPlan(), 500);
 }
@@ -742,7 +783,7 @@ async function flushPlan(force = false): Promise<void> {
   if (!cur || !plan.dirty || (plan.conflict && !force)) return;
   const id = cur.id, content = plan.text.value;
   plan.dirty = false;
-  plan.state.textContent = "保存中…";
+  plan.state.textContent = L("保存中…", "Saving…");
   plan.saving = (async () => {
     try {
       const r = await putPlan(id, { content, expectedVersion: plan.version, session: plan.session });
@@ -750,20 +791,20 @@ async function flushPlan(force = false): Promise<void> {
       if (r.status === 409) {
         plan.dirty = true;
         plan.conflict = { plan: r.body.plan ?? "", planVersion: r.body.planVersion ?? 0 };
-        plan.conflictBar.hidden = false; plan.state.textContent = "未保存";
+        plan.conflictBar.hidden = false; plan.state.textContent = L("未保存", "Unsaved");
         showPlan("edit");
         return;
       }
       if (!r.body.ok || !r.body.todo) throw new Error(r.body.error ?? `HTTP ${r.status}`);
       plan.version = r.body.todo.planVersion; cur = { ...cur, plan: r.body.todo.plan, planVersion: r.body.todo.planVersion };
       if (plan.text.value !== content) plan.dirty = true;   // typed while saving: the next save carries it
-      plan.state.textContent = plan.dirty ? "未保存" : "已保存";
+      plan.state.textContent = plan.dirty ? L("未保存", "Unsaved") : L("已保存", "Saved");
       plan.versionsBtn.hidden = !plan.version;
       planMetaText(r.body.planMeta ?? null);
       if (!plan.drawer.hidden) void loadPlanVersions();
     } catch (e) {
-      plan.dirty = true; plan.state.textContent = "保存失败";
-      toast(`方案保存失败：${(e as Error).message}`);
+      plan.dirty = true; plan.state.textContent = L("保存失败", "Not saved");
+      toast(L(`方案保存失败：${(e as Error).message}`, `Plan not saved: ${(e as Error).message}`));
     }
   })();
   await plan.saving;
@@ -773,12 +814,12 @@ async function flushPlan(force = false): Promise<void> {
 $("#d-plan-reload").onclick = () => {
   if (!plan.conflict) return;
   plan.text.value = plan.conflict.plan; plan.version = plan.conflict.planVersion;
-  plan.conflict = null; plan.dirty = false; plan.conflictBar.hidden = true; plan.state.textContent = "已载入最新";
+  plan.conflict = null; plan.dirty = false; plan.conflictBar.hidden = true; plan.state.textContent = L("已载入最新", "Latest loaded");
   showPlan("view");
   if (cur) void api<Detail>(`/api/todos/${cur.id}`).then((r) => { if (cur?.id === r.todo.id) { planMetaText(r.planMeta); renderEvents(r.events); } }, () => {});
 };
 $("#d-plan-force").onclick = async () => {
-  if (!plan.conflict || !confirm("用你的版本覆盖最新方案？被覆盖的版本仍可在「版本」里找回。")) return;
+  if (!plan.conflict || !confirm(L("用你的版本覆盖最新方案？被覆盖的版本仍可在「版本」里找回。", "Overwrite the latest plan with yours? The overwritten version stays under Versions."))) return;
   // Based on the version that is there now, as a new version of its own (no merging into someone else's).
   plan.version = plan.conflict.planVersion; plan.session = newSession();
   plan.conflict = null; plan.conflictBar.hidden = true;
@@ -797,7 +838,7 @@ async function loadPlanVersions() {
     const r = await api<{ versions: PlanVersionRow[] }>(`/api/todos/${id}/plan/versions`);
     if (cur?.id !== id) return;
     plan.list.innerHTML = r.versions.map((v) => `<button type="button" class="plan-ver${v.version === plan.version ? " current" : ""}" data-version="${v.version}" aria-pressed="false">
-      <b>v${v.version}</b><span>${esc(fmtAgo(v.createdAt))} · ${esc(v.source)} · ${v.chars} 字${v.version === plan.version ? " · 当前" : ""}</span><i>${esc(v.excerpt || "（空）")}</i></button>`).join("") || `<p class="sp-hint">还没有版本</p>`;
+      <b>v${v.version}</b><span>${esc(fmtAgo(v.createdAt))} · ${esc(v.source)} · ${L(`${v.chars} 字`, `${v.chars} chars`)}${v.version === plan.version ? L(" · 当前", " · current") : ""}</span><i>${esc(v.excerpt || L("（空）", "(empty)"))}</i></button>`).join("") || `<p class="sp-hint">${L("还没有版本", "No versions yet")}</p>`;
   } catch (e) { toast((e as Error).message); }
 }
 plan.list.onclick = async (e) => {
@@ -808,24 +849,24 @@ plan.list.onclick = async (e) => {
   try {
     const { version: v } = await api<{ version: PlanVersionRow & { content: string } }>(`/api/todos/${id}/plan/versions?version=${n}`);
     if (cur?.id !== id) return;
-    plan.show.innerHTML = `<div class="run-head"><b>v${v.version}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${v.version === plan.version ? `<span>当前版本</span>` : `<button type="button" class="sp-btn sm" data-restore="${v.version}">恢复此版</button>`}</div>
-      <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">（空）</p>`}</div>`;
+    plan.show.innerHTML = `<div class="run-head"><b>v${v.version}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${v.version === plan.version ? `<span>${L("当前版本", "Current version")}</span>` : `<button type="button" class="sp-btn sm" data-restore="${v.version}">${L("恢复此版", "Restore this one")}</button>`}</div>
+      <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">${L("（空）", "(empty)")}</p>`}</div>`;
     const restore = plan.show.querySelector<HTMLButtonElement>("[data-restore]");
     if (restore) restore.onclick = async () => {
       // A restore is a new version with that text; nothing is removed.
       await flushPlan();
-      if (plan.conflict || cur?.id !== id) { toast("先处理方案冲突"); return; }
+      if (plan.conflict || cur?.id !== id) { toast(L("先处理方案冲突", "Resolve the plan conflict first")); return; }
       restore.disabled = true;
       const r = await putPlan(id, { content: v.content, expectedVersion: plan.version });
-      if (r.status === 409) { toast("方案刚被他人更新，请重新打开版本列表"); restore.disabled = false; return; }
-      if (!r.body.ok || !r.body.todo) { toast(r.body.error ?? "恢复失败"); restore.disabled = false; return; }
+      if (r.status === 409) { toast(L("方案刚被他人更新，请重新打开版本列表", "Someone just updated the plan; open the versions again")); restore.disabled = false; return; }
+      if (!r.body.ok || !r.body.todo) { toast(r.body.error ?? L("恢复失败", "Restore failed")); restore.disabled = false; return; }
       if (cur?.id !== id) return;
       cur = { ...cur, plan: r.body.todo.plan, planVersion: r.body.todo.planVersion };
       fillPlan(cur, r.body.planMeta ?? null);
       plan.drawer.hidden = false; plan.versionsBtn.setAttribute("aria-expanded", "true");
       await loadPlanVersions();
       plan.show.innerHTML = "";
-      toast(`已恢复 v${v.version}，保存为 v${r.body.todo.planVersion}`);
+      toast(L(`已恢复 v${v.version}，保存为 v${r.body.todo.planVersion}`, `Restored v${v.version} as v${r.body.todo.planVersion}`));
       const detail = await api<Detail>(`/api/todos/${id}`);
       if (cur?.id === id) renderEvents(detail.events);
     };
@@ -842,7 +883,7 @@ async function flushSave() {
   if (!cur || !Object.keys(pending).length) return;
   const body = pending; pending = {};
   try { const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify(body) }); if (cur && cur.id === r.todo.id) cur = r.todo; }
-  catch (e) { toast(`保存失败：${(e as Error).message}`); }
+  catch (e) { toast(L(`保存失败：${(e as Error).message}`, `Not saved: ${(e as Error).message}`)); }
 }
 // While an IME composes (pinyin), the field holds the raw syllables: save when the word is committed.
 d.title.oninput = (e) => { if (!(e as InputEvent).isComposing) scheduleSave({ title: d.title.value }); };
@@ -858,7 +899,7 @@ d.done.onchange = async () => {
   if (cur.status === "review" && d.done.checked) { await verdict(cur.id, "accept"); return; }
   const open = curSubs.filter((s) => s.status === "open" || s.status === "doing" || s.status === "deferred").length;
   await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) });
-  toast(d.done.checked ? (open ? `已完成，连同 ${open} 个子任务` : "已完成") : "已重新打开");
+  toast(d.done.checked ? (open ? L(`已完成，连同 ${open} 个子任务`, `Done, with ${open} subtask(s)`) : L("已完成", "Done")) : L("已重新打开", "Reopened"));
   closeDetail();
 };
 
@@ -867,21 +908,21 @@ function renderSubs(parent: Todo | null, subs: Todo[]) {
   curSubs = subs;
   const isSub = !!cur?.parentId;
   d.parent.hidden = !isSub;
-  $("#d-subs-label").textContent = isSub ? "所属任务" : "子任务";
+  $("#d-subs-label").textContent = isSub ? L("所属任务", "Parent task") : L("子任务", "Subtasks");
   d.subsList.hidden = isSub; d.subAdd.hidden = isSub;
   const done = subs.filter((s) => s.status === "done").length;
   d.subsN.textContent = isSub ? "" : subs.length ? `${done}/${subs.length}` : "";
   if (isSub) {
-    d.parent.innerHTML = `属于 <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button type="button" class="sp-btn sm" data-op="detach">移出</button>`;
+    d.parent.innerHTML = `${L("属于", "Step of")} <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button type="button" class="sp-btn sm" data-op="detach">${L("移出", "Detach")}</button>`;
     $<HTMLElement>("[data-open]", d.parent).onclick = (e) => { e.preventDefault(); void openDetail(cur!.parentId!); };
-    $<HTMLElement>("[data-op=detach]", d.parent).onclick = () => void patchSub(cur!.id, { parentId: null }, "已移出，成为独立任务");
+    $<HTMLElement>("[data-op=detach]", d.parent).onclick = () => void patchSub(cur!.id, { parentId: null }, L("已移出，成为独立任务", "Detached: now a task of its own"));
     return;
   }
   d.subsList.innerHTML = subs.map((s) => `
     <div class="subrow ${s.status}" data-id="${s.id}">
-      ${checkHtml(s.status === "done", `完成 ${s.title}`)}
+      ${checkHtml(s.status === "done", `${L("完成", "Done:")} ${s.title}`)}
       <span class="title">${esc(s.title)}</span>
-      ${s.status === "deferred" ? `<span class="sp-badge off">暂不处理</span>` : ""}
+      ${s.status === "deferred" ? `<span class="sp-badge off">${L("暂不处理", "Deferred")}</span>` : ""}
       ${s.due ? `<span class="sp-chip due${isLate(s) && s.status !== "done" && s.status !== "deferred" && cur?.status !== "deferred" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
     </div>`).join("");
   d.subsList.querySelectorAll<HTMLElement>(".subrow").forEach((row) => {
@@ -922,7 +963,7 @@ d.defer.onclick = async () => {
     const r = await api<{ todo: Todo }>(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: restoring ? "open" : "deferred" }) });
     await load();
     if (cur?.id === id) await openDetail(id);
-    toast(restoring ? (isLate(r.todo) ? "已恢复待办，原截止日期已过，请调整日期" : "已恢复待办") : "已暂不处理，可从左侧列表恢复");
+    toast(restoring ? (isLate(r.todo) ? L("已恢复待办，原截止日期已过，请调整日期", "Restored; its due date has passed, set a new one") : L("已恢复待办", "Restored")) : L("已暂不处理，可从左侧列表恢复", "Deferred; restore it from the list on the left"));
   } catch (e) { toast((e as Error).message); }
   finally { d.defer.disabled = false; }
 };
@@ -930,7 +971,7 @@ d.review.onclick = async () => {
   if (!cur) return;
   const id = cur.id;
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
-  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) }); toast("已提交验收"); if (cur?.id === id) await openDetail(id); }
+  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) }); toast(L("已提交验收", "Submitted for review")); if (cur?.id === id) await openDetail(id); }
   catch (e) { toast((e as Error).message); }
 };
 d.accept.onclick = () => { if (cur) void verdict(cur.id, "accept"); };
@@ -946,13 +987,13 @@ $("#d-reject-cancel").onclick = () => { d.rejectBox.hidden = true; };
 d.rejectSend.onclick = async () => {
   if (!cur) return;
   const reason = d.rejectReason.value.trim();
-  if (!reason) { toast("请写明退回原因"); d.rejectReason.focus(); return; }
+  if (!reason) { toast(L("请写明退回原因", "Say why it goes back")); d.rejectReason.focus(); return; }
   d.rejectSend.disabled = true;
   try { if (await verdict(cur.id, "reject", reason)) d.rejectReason.value = ""; }
   finally { d.rejectSend.disabled = false; }
 };
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
-$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; showDetailEl(false); toast("已删除"); void load(); };
+$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(L(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`, `Delete “${cur.title}”${open ? ` and its ${open} subtask(s)` : ""}?`))) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; showDetailEl(false); toast(L("已删除", "Deleted")); void load(); };
 
 // Drafts stay with their todo when the detail is closed or another task is opened.
 const recordDrafts = new Map<number, string>();
@@ -962,14 +1003,14 @@ const imagePreview = $("#d-record-preview");
 function renderRecordImages() {
   imageInput.value = "";
   imagePreview.innerHTML = (cur ? recordImages.get(cur.id) ?? [] : []).map((image, i) =>
-    `<div class="record-preview-item"><img src="${esc(image.url)}" alt="${esc(image.file.name)}"><button type="button" class="sp-btn sm" data-remove-image="${i}" aria-label="移除图片 ${esc(image.file.name)}">移除</button></div>`).join("");
+    `<div class="record-preview-item"><img src="${esc(image.url)}" alt="${esc(image.file.name)}"><button type="button" class="sp-btn sm" data-remove-image="${i}" aria-label="${L("移除图片", "Remove picture")} ${esc(image.file.name)}">${L("移除", "Remove")}</button></div>`).join("");
 }
 function addRecordImages(files: File[]) {
   if (!cur) return;
   const images = recordImages.get(cur.id) ?? [];
-  if (images.length + files.length > 6) { toast("每条记录最多 6 张图片"); return; }
+  if (images.length + files.length > 6) { toast(L("每条记录最多 6 张图片", "At most 6 pictures per record")); return; }
   if (files.some(file => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) || !file.size || file.size > 10 * 1024 * 1024)) {
-    toast("请选择 PNG、JPEG、GIF 或 WebP 图片，每张不超过 10 MB"); return;
+    toast(L("请选择 PNG、JPEG、GIF 或 WebP 图片，每张不超过 10 MB", "Pick PNG, JPEG, GIF or WebP pictures of at most 10 MB each")); return;
   }
   recordImages.set(cur.id, [...images, ...files.map(file => ({ file, url: URL.createObjectURL(file) }))]);
   renderRecordImages();
@@ -991,7 +1032,7 @@ let recordCursor: number | null = null;
 /** The records on screen by id, for editing in place. */
 const shownRecords = new Map<number, OperationRecord>();
 const recordHtml = (r: OperationRecord) => `<article class="operation-record" data-rid="${r.id}">
-    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button type="button" class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button type="button" class="sp-btn ghost sm" data-edit>编辑</button></div>
+    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button type="button" class="edited" data-revisions title="${L("查看旧版本", "Earlier versions")}">${L("已编辑", "Edited")} · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button type="button" class="sp-btn ghost sm" data-edit>${L("编辑", "Edit")}</button></div>
     <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="${esc(on(`/blobs/${image.key}`))}" target="_blank" rel="noopener"><img src="${esc(on(`/blobs/${image.key}`))}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
 // A record's pictures open in the page, not a new tab (the desktop client's webview cannot open one).
 const imageView = {
@@ -1040,7 +1081,7 @@ function renderRecords(page: RecordPage, append = false) {
   for (const r of page.records) shownRecords.set(r.id, r);
   const html = page.records.map(recordHtml).join("");
   if (append) d.records.insertAdjacentHTML("beforeend", html);
-  else d.records.innerHTML = html || `<p class="sp-hint">还没有操作记录</p>`;
+  else d.records.innerHTML = html || `<p class="sp-hint">${L("还没有操作记录", "No records yet")}</p>`;
   recordCursor = page.recordsNextBefore;
   d.recordMore.hidden = recordCursor === null;
 }
@@ -1060,8 +1101,8 @@ d.records.addEventListener("click", async (e) => {
     if (article.querySelector(".record-edit")) return;
     const md = $(".md", article);
     md.hidden = true;
-    const box = el(`<div class="record-edit"><textarea class="sp-textarea d-notes" maxlength="20000" spellcheck="false" aria-label="编辑记录"></textarea>
-      <div class="record-edit-bar"><span class="sp-hint">只在更正事实时编辑；结论变了请追加新记录。旧版本会保留。</span><div class="grow"></div><button type="button" class="sp-btn sm" data-cancel>取消</button><button type="button" class="sp-btn sm" data-save>保存</button></div></div>`);
+    const box = el(`<div class="record-edit"><textarea class="sp-textarea d-notes" maxlength="20000" spellcheck="false" aria-label="${L("编辑记录", "Edit record")}"></textarea>
+      <div class="record-edit-bar"><span class="sp-hint">${L("只在更正事实时编辑；结论变了请追加新记录。旧版本会保留。", "Edit only to correct a fact; a new conclusion is a new record. Earlier versions are kept.")}</span><div class="grow"></div><button type="button" class="sp-btn sm" data-cancel>${L("取消", "Cancel")}</button><button type="button" class="sp-btn sm" data-save>${L("保存", "Save")}</button></div></div>`);
     const ta = $<HTMLTextAreaElement>("textarea", box);
     ta.value = record.content;
     md.after(box);
@@ -1078,7 +1119,7 @@ d.records.addEventListener("click", async (e) => {
           // Someone edited it meanwhile: show theirs, keep this text in the box to merge by hand.
           shownRecords.set(rid, b.record);
           $(".md", article).innerHTML = renderMd(b.record.content);
-          toast("这条记录刚被他人修改，已更新下方原文；你的修改仍在输入框里");
+          toast(L("这条记录刚被他人修改，已更新下方原文；你的修改仍在输入框里", "Someone just edited this record; theirs is shown, yours is still in the box"));
           record.revision = b.record.revision; record.content = b.record.content;
           save.disabled = false;
           return;
@@ -1086,7 +1127,7 @@ d.records.addEventListener("click", async (e) => {
         if (!r.ok || !b.ok || !b.record) throw new Error(b.error ?? `HTTP ${r.status}`);
         shownRecords.set(rid, b.record);
         article.outerHTML = recordHtml(b.record);
-        toast(b.record.revision === record.revision ? "没有改动" : "记录已更新，旧版本已保留");
+        toast(b.record.revision === record.revision ? L("没有改动", "No change") : L("记录已更新，旧版本已保留", "Record updated; the earlier version is kept"));
         const detail = await api<Detail>(`/api/todos/${todoId}`);
         if (cur?.id === todoId) renderEvents(detail.events);
       } catch (err) { toast((err as Error).message); save.disabled = false; }
@@ -1099,8 +1140,8 @@ d.records.addEventListener("click", async (e) => {
     try {
       const { revisions } = await api<{ revisions: RecordRevision[] }>(`/api/todos/${todoId}/records/${rid}/revisions`);
       const list = el(`<div class="revisions">${[...revisions].reverse().map((v, i) => `<div class="revision">
-        <div class="run-head"><b>${v.revision === 0 ? "原文" : `修订 ${v.revision}`}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${i === 0 ? "<span>当前</span>" : ""}</div>
-        <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">（无文字）</p>`}</div></div>`).join("")}</div>`);
+        <div class="run-head"><b>${v.revision === 0 ? L("原文", "Original") : L(`修订 ${v.revision}`, `Revision ${v.revision}`)}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${i === 0 ? `<span>${L("当前", "Current")}</span>` : ""}</div>
+        <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">${L("（无文字）", "(no text)")}</p>`}</div></div>`).join("")}</div>`);
       $(".record-images", article).after(list);
     } catch (err) { toast((err as Error).message); }
   }
@@ -1121,7 +1162,7 @@ d.recordAdd.onclick = async () => {
     if (cur?.id === id) renderRecordImages();
     if (recordDrafts.get(id) === content) recordDrafts.delete(id);
     if (cur?.id === id && d.recordContent.value === content) d.recordContent.value = "";
-    toast("已追加记录");
+    toast(L("已追加记录", "Record added"));
     const detail = await api<Detail>(`/api/todos/${id}`);
     if (cur?.id === id) { renderRecords(detail); renderEvents(detail.events); }
   } catch (e) { toast((e as Error).message); }
@@ -1144,29 +1185,31 @@ function renderRuns(runs: Run[]) {
 }
 function runHtml(r: Run): string {
   // Running is ink (the kit's AI mark), finished green, failed red: each with its word.
-  const st = r.status === "running" ? `<span class="sp-badge ai live">执行中</span>` : r.status === "ok" ? `<span class="sp-badge ok">完成</span>` : `<span class="sp-badge bad">失败</span>`;
+  const st = r.status === "running" ? `<span class="sp-badge ai live">${L("执行中", "Running")}</span>` : r.status === "ok" ? `<span class="sp-badge ok">${L("完成", "Finished")}</span>` : `<span class="sp-badge bad">${L("失败", "Failed")}</span>`;
   return `<div class="run${r.status === "running" ? " live" : ""}" data-run="${r.id}">
-    <div class="run-head">${st}<span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span class="err-text">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button type="button" class="sp-btn sm" data-op="done">${cur?.status === "review" ? "验收通过" : "标记完成"}</button>` : ""}</div>
+    <div class="run-head">${st}<span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span class="err-text">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button type="button" class="sp-btn sm" data-op="done">${cur?.status === "review" ? L("验收通过", "Accept") : L("标记完成", "Mark done")}</button>` : ""}</div>
     <div class="md">${renderMd(r.output)}</div>
   </div>`;
 }
 function renderEvents(events: TodoEvent[]) {
-  const label: Record<string, string> = { review: "提交验收", "review-rejected": "验收不通过", "plan-edited": "修改方案", "record-edited": "编辑操作记录", "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
+  const label: Record<string, string> = EN
+    ? { review: "Submitted for review", "review-rejected": "Sent back", "plan-edited": "Plan edited", "record-edited": "Record edited", "record-added": "Record added", created: "Created", edited: "Edited", done: "Done", open: "Reopened", doing: "Started", deferred: "Deferred", dropped: "Dropped", deleted: "Deleted", "subtask-added": "Subtask added", "run-started": "AI run started", "run-finished": "AI run finished", "run-failed": "AI run failed" }
+    : { review: "提交验收", "review-rejected": "验收不通过", "plan-edited": "修改方案", "record-edited": "编辑操作记录", "record-added": "追加操作记录", created: "创建", edited: "修改", done: "完成", open: "重新打开", doing: "开始", deferred: "暂不处理", dropped: "放弃", deleted: "删除", "subtask-added": "添加子任务", "run-started": "AI 开始执行", "run-finished": "AI 执行完成", "run-failed": "AI 执行失败" };
   d.events.innerHTML = events.map((e) => {
     const src = e.data.source ? ` · ${esc(String(e.data.source))}` : "";
     const changed = e.data.changed && typeof e.data.changed === "object" ? Object.keys(e.data.changed as object).join(", ") : "";
-    const version = e.kind === "plan-edited" && e.data.version ? ` · v${esc(String(e.data.version))}` : e.kind === "record-edited" && e.data.revision ? ` · 记录 ${esc(String(e.data.recordId))} 修订 ${esc(String(e.data.revision))}` : "";
-    const kind = e.kind === "done" && e.data.verdict === "accept" ? "验收通过" : label[e.kind] ?? esc(e.kind);
+    const version = e.kind === "plan-edited" && e.data.version ? ` · v${esc(String(e.data.version))}` : e.kind === "record-edited" && e.data.revision ? L(` · 记录 ${esc(String(e.data.recordId))} 修订 ${esc(String(e.data.revision))}`, ` · record ${esc(String(e.data.recordId))} revision ${esc(String(e.data.revision))}`) : "";
+    const kind = e.kind === "done" && e.data.verdict === "accept" ? L("验收通过", "Accepted") : label[e.kind] ?? esc(e.kind);
     const reason = e.kind === "review-rejected" && e.data.reason ? ` · ${esc(String(e.data.reason).slice(0, 80))}` : "";
     return `<div><span class="k">${kind}</span>${esc(fmtAgo(e.at))}${src}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}${reason}</div>`;
-  }).join("") || `<div>无</div>`;
+  }).join("") || `<div>${L("无", "None")}</div>`;
 }
 
 /** Start an execution, or reattach to the one in flight, and draw it as it streams. */
 async function runExecute() {
   if (!cur) return;
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
-  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, timezone: TZ }) });
+  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, timezone: TZ, lang: EN ? "en" : "zh" }) });
 }
 /**
  * A run on another machine, as the same events the stream gives: the bus cannot stream, so the run
@@ -1222,11 +1265,11 @@ function followRun(url: string, init: RequestInit) {
         else if (event === "done" || event === "error") {
           if (todoId !== undefined && aiRuns.delete(runKey(todoId, runM))) renderList();
           if (p.run && cur?.id === todoId) { const r = await api<{ runs: Run[]; events: TodoEvent[] }>(`/api/todos/${todoId}`); renderRuns(r.runs); renderEvents(r.events); }
-          if (event === "error") toast(`执行失败：${p.error ?? "未知错误"}`); else toast("AI 执行完成");
+          if (event === "error") toast(L(`执行失败：${p.error ?? "未知错误"}`, `Run failed: ${p.error ?? "unknown error"}`)); else toast(L("AI 执行完成", "AI run finished"));
         }
       }
     } catch (e) {
-      if (!ac.signal.aborted) toast(`执行失败：${(e as Error).message}`);
+      if (!ac.signal.aborted) toast(L(`执行失败：${(e as Error).message}`, `Run failed: ${(e as Error).message}`));
     } finally {
       if (liveAbort === ac) { liveAbort = null; d.execute.disabled = false; }
     }
@@ -1295,12 +1338,12 @@ const draftCard = (d: Draft) => el(`
     <input type="checkbox" checked>
     <input class="title" value="${esc(d.title)}" maxlength="300">
     <div class="fields">
-      <input class="due" type="datetime-local" value="${esc(d.due ? (d.due.length > 10 ? d.due : `${d.due}T09:00`) : "")}" title="截止（清空即无日期）">
-      <select class="priority">${PRI.map((p, n) => `<option value="${n}"${(d.priority ?? 0) === n ? " selected" : ""}>${n ? `优先级 ${p}` : "无优先级"}</option>`).join("")}</select>
-      <input class="project" placeholder="项目" value="${esc(d.project ?? "")}">
-      <input class="tags" placeholder="标签，逗号分隔" value="${esc((d.tags ?? []).join(", "))}">
+      <input class="due" type="datetime-local" value="${esc(d.due ? (d.due.length > 10 ? d.due : `${d.due}T09:00`) : "")}" title="${L("截止（清空即无日期）", "Due (empty for no date)")}">
+      <select class="priority">${PRI.map((p, n) => `<option value="${n}"${(d.priority ?? 0) === n ? " selected" : ""}>${n ? L(`优先级 ${p}`, `Priority ${p}`) : L("无优先级", "No priority")}</option>`).join("")}</select>
+      <input class="project" placeholder="${L("项目", "Project")}" value="${esc(d.project ?? "")}">
+      <input class="tags" placeholder="${L("标签，逗号分隔", "Tags, comma separated")}" value="${esc((d.tags ?? []).join(", "))}">
     </div>
-    <textarea class="notes" rows="1" placeholder="备注">${esc(d.notes ?? "")}</textarea>
+    <textarea class="notes" rows="1" placeholder="${L("备注", "Notes")}">${esc(d.notes ?? "")}</textarea>
   </div>`);
 const readDraft = (card: HTMLElement): Draft | null => {
   if (!$<HTMLInputElement>("input[type=checkbox]", card).checked) return null;
@@ -1316,9 +1359,9 @@ const readDraft = (card: HTMLElement): Draft | null => {
 function renderDrafts(m: ChatMessage): Node {
   const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><div class="drafts"></div></div>`);
   const list = $(".drafts", wrap);
-  if (added.has(m.id)) { list.replaceWith(el(`<div class="done-note">这些任务已经加入清单。</div>`)); return wrap; }
+  if (added.has(m.id)) { list.replaceWith(el(`<div class="done-note">${L("这些任务已经加入清单。", "These tasks are on the list already.")}</div>`)); return wrap; }
   void api<{ drafts: Draft[]; rejected: number }>("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: m.content }) }, chatVia()).then((r) => {
-    if (!r.drafts.length) { list.replaceWith(el(`<div class="done-note">没有可用的任务草稿。</div>`)); return; }
+    if (!r.drafts.length) { list.replaceWith(el(`<div class="done-note">${L("没有可用的任务草稿。", "No usable task drafts.")}</div>`)); return; }
     for (const d of r.drafts) {
       const card = draftCard(d);
       card.dataset.dayOnly = d.due && d.due.length === 10 ? "1" : "";
@@ -1326,29 +1369,29 @@ function renderDrafts(m: ChatMessage): Node {
       $<HTMLInputElement>("input[type=checkbox]", card).onchange = (e) => card.classList.toggle("off", !(e.target as HTMLInputElement).checked);
       list.appendChild(card);
     }
-    const bar = el(`<div class="bar"><span class="n">${r.drafts.length} 项，可以先改再加入${r.rejected ? `（${r.rejected} 项无法识别）` : ""}</span><button type="button" class="btn">加入清单</button></div>`);
+    const bar = el(`<div class="bar"><span class="n">${L(`${r.drafts.length} 项，可以先改再加入${r.rejected ? `（${r.rejected} 项无法识别）` : ""}`, `${r.drafts.length} draft(s); edit them before adding${r.rejected ? ` (${r.rejected} not understood)` : ""}`)}</span><button type="button" class="btn">${L("加入清单", "Add to list")}</button></div>`);
     $<HTMLButtonElement>("button", bar).onclick = async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       const drafts = [...list.querySelectorAll<HTMLElement>(".draft")].map(readDraft).filter((d): d is Draft => !!d);
-      if (!drafts.length) { toast("没有选中的任务"); return; }
+      if (!drafts.length) { toast(L("没有选中的任务", "No task selected")); return; }
       btn.disabled = true;
       try {
         await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) }, chatVia());
         rememberAdded(m.id);
-        list.replaceWith(el(`<div class="done-note">已加入 ${drafts.length} 项。</div>`));
-        toast(`已加入 ${drafts.length} 项`);
+        list.replaceWith(el(`<div class="done-note">${L(`已加入 ${drafts.length} 项。`, `Added ${drafts.length}.`)}</div>`));
+        toast(L(`已加入 ${drafts.length} 项`, `Added ${drafts.length}`));
         await load();
       } catch (err) { btn.disabled = false; toast((err as Error).message); }
     };
     list.appendChild(bar);
-  }).catch((e) => { list.replaceWith(el(`<div class="done-note">草稿读取失败：${esc((e as Error).message)}</div>`)); });
+  }).catch((e) => { list.replaceWith(el(`<div class="done-note">${L("草稿读取失败：", "Could not read the drafts: ")}${esc((e as Error).message)}</div>`)); });
   return wrap;
 }
 
 /** An answer with operations: the text and the list of what the server did (filled in by onReply). */
 function renderActions(m: ChatMessage): Node {
   const n = (m.content.match(/"op"\s*:/g) ?? []).length;
-  const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><ul class="applied"><li>清单操作 ${n} 项</li></ul></div>`);
+  const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><ul class="applied"><li>${L(`清单操作 ${n} 项`, `${n} list operation(s)`)}</li></ul></div>`);
   appliedNotes.set(m.id, $("ul", wrap));
   return wrap;
 }
@@ -1381,7 +1424,7 @@ async function mountChat() {
   try { await loadWidget(); } catch {
     if (n !== chatMounts) return;
     chatWidget?.destroy(); chatWidget = null;
-    freshChatHost().innerHTML = `<div class="sp-hint ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`;
+    freshChatHost().innerHTML = `<div class="sp-hint ai-off">${L("AI 组件没有加载（ai-space 不可达）。清单本身照常可用。", "The AI panel did not load (ai-space is not reachable). The list works as usual.")}</div>`;
     return;
   }
   if (n !== chatMounts) return;
@@ -1391,11 +1434,19 @@ async function mountChat() {
   chatWidget = SpaceChat!.mount(freshChatHost(), {
     // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each
     // (全部机器: this machine's).
-    scope: chatVia() ? `todo-${chatVia()}` : "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
-    context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`, {}, chatVia()),
-    placeholder: "写下要做的事，或者「把明天的都推到周五」「今天先做什么」…",
-    emptyText: (allMode() ? `全部机器视图下，AI 只看和改本机（${nameOf("")}）的清单；要管别的机器，先在左侧选中它。` : "") + "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
-    presets: [
+    scope: chatVia() ? `todo-${chatVia()}` : "todo", theme: "auto", lang: EN ? "en" : "zh", attachments: true, timeoutMs: 300_000,
+    context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}&lang=${EN ? "en" : "zh"}`, {}, chatVia()),
+    placeholder: L("写下要做的事，或者「把明天的都推到周五」「今天先做什么」…", "Write what to do, or “move tomorrow's to Friday”, “what first today?”…"),
+    emptyText: EN
+      ? (allMode() ? `In the all-machines view the AI reads and changes this machine's list only (${nameOf("")}); pick another machine on the left to manage it. ` : "")
+        + "One entry, three uses: write “send the weekly report by 3 pm tomorrow, book flights Friday #travel” and it drafts tasks for you to confirm; say “split the year-end review into three steps” or “3 is done” and it changes the list; ask “what first today?” and it orders by due date and priority. You can also paste, drop or attach screenshots and photos with ＋."
+      : (allMode() ? `全部机器视图下，AI 只看和改本机（${nameOf("")}）的清单；要管别的机器，先在左侧选中它。` : "") + "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
+    presets: EN ? [
+      { label: "Today's plan", prompt: "From the due dates and priorities, give me today's order, briefly.", send: true },
+      { label: "Sort priorities", prompt: "Go over the list, raise or lower the priority of what is clearly urgent or important, and say why.", send: true },
+      { label: "Split a task", prompt: "Split this task into steps I can do: ", send: false },
+      { label: "Week review", prompt: "From what was finished lately, sum up this week in three sentences and name what is still waiting.", send: true },
+    ] : [
       { label: "今日计划", prompt: "根据截止时间和优先级，给我今天的执行顺序，简短。", send: true },
       { label: "整理优先级", prompt: "看一遍清单，把明显紧急或重要的调整优先级，并说明理由。", send: true },
       { label: "拆分任务", prompt: "把这个任务拆成可执行的步骤：", send: false },
@@ -1407,12 +1458,14 @@ async function mountChat() {
       try {
         const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) }, chatVia());
         const ul = appliedNotes.get(m.id);
-        const opName: Record<string, string> = { review: "提交验收", accept: "验收通过", reject: "退回", add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
-        if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
+        const opName: Record<string, string> = EN
+          ? { review: "Submit for review", accept: "Accept", reject: "Send back", add: "Add", update: "Edit", done: "Done", start: "Start", defer: "Defer", reopen: "Reopen", record: "Record", plan: "Plan", "edit-record": "Edit record", delete: "Delete" }
+          : { review: "提交验收", accept: "验收通过", reject: "退回", add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
+        if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? L("失败", "failed"))}`}</li>`).join("") + (r.rejected ? `<li class="bad">${L(`${r.rejected} 项无法识别`, `${r.rejected} not understood`)}</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
-        toast(`AI 改了清单：${ok}/${r.results.length} 项成功`);
+        toast(L(`AI 改了清单：${ok}/${r.results.length} 项成功`, `The AI changed the list: ${ok}/${r.results.length} succeeded`));
         await load();
-      } catch (e) { toast(`清单操作失败：${(e as Error).message}`); }
+      } catch (e) { toast(L(`清单操作失败：${(e as Error).message}`, `List change failed: ${(e as Error).message}`)); }
     },
   });
 }
@@ -1441,8 +1494,8 @@ async function loadMachines() {
     try {
       const r = await fetch(v ? `/api/m/${encodeURIComponent(v)}${path}` : path);
       const b = (await r.json()) as ListAnswer & { error?: string };
-      return { via: v, name: v || m.local || "本机", active: r.ok ? b.counts.active : null, error: r.ok ? null : b.error ?? `HTTP ${r.status}` };
-    } catch (e) { return { via: v, name: v || m.local || "本机", active: null, error: (e as Error).message }; }
+      return { via: v, name: v || m.local || L("本机", "This machine"), active: r.ok ? b.counts.active : null, error: r.ok ? null : b.error ?? `HTTP ${r.status}` };
+    } catch (e) { return { via: v, name: v || m.local || L("本机", "This machine"), active: null, error: (e as Error).message }; }
   }));
   if (allMode() ? machines.length < 2 : !machines.some((x) => x.via === via)) { via = ""; syncUrl(); }
   renderMachines();
@@ -1454,7 +1507,7 @@ function renderMachines() {
   $("#machine").textContent = many ? machineName() : "";
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
   // A machine that did not answer keeps its row, with a red dot and the reason in the title.
-  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">全部机器</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? `读取失败：${x.error}` : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : "（本机）"}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>失败` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
+  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
 }
 $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");

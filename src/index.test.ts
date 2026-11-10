@@ -137,6 +137,10 @@ describe("service", () => {
     expect(ctx.body).not.toHaveProperty("model");
     expect(ctx.body.tools).toEqual(["WebSearch", "WebFetch"]);
     expect(String(ctx.body.text)).toContain(`- #${todo.id} · 买牛奶 · due 2026-09-23 · p1 · #购物 · (doing)`);
+    expect(String(ctx.body.text)).toContain("Answer language: zh");
+    // The page in English asks for English answers; an unknown value keeps the configured language.
+    expect(String((await j("/api/ai/context?timezone=Asia/Shanghai&lang=en")).body.text)).toContain("Answer language: en");
+    expect(String((await j("/api/ai/context?lang=xx")).body.text)).toContain("Answer language: zh");
     const text = `改好了。\n\n\`\`\`todo-actions\n[{"op":"done","id":${todo.id}},{"op":"add","title":"写月报","due":"2026-09-30","priority":2},{"op":"delete","id":999},{"op":"update","id":${todo.id},"due":"bad"}]\n\`\`\``;
     const r = await j("/api/ai/apply", { method: "POST", body: JSON.stringify({ text }) });
     expect(r.status).toBe(200);

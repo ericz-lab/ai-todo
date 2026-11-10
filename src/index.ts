@@ -104,6 +104,8 @@ export function createServer(opts: ServerOptions) {
   const spaceAppToken = opts.spaceAppToken ?? "";
   const publicBase = opts.publicBase ?? "";
   const lang = opts.lang ?? "zh";
+  /** The page's language (`zh` or `en`) for what the AI writes back to it; anything else is the configured one. */
+  const langOf = (v: unknown): string => (v === "zh" || v === "en" ? v : lang);
   const defaultTz = opts.timezone ?? appZone();
   const executeTimeoutMs = opts.executeTimeoutMs ?? 600_000;
   const executeModel = opts.executeModel || "claude/intermediate";
@@ -240,9 +242,9 @@ export function createServer(opts: ServerOptions) {
   };
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
-  const startExecution = (todo: Todo, extra: string, timezone: string): Live => {
+  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang): Live => {
     // `todo` carries the plan; executePrompt cuts it (and the parent's) to what a prompt can hold.
-    const prompt = executePrompt(todo, { now: now(), timezone, lang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
+    const prompt = executePrompt(todo, { now: now(), timezone, lang: answerLang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
     const run = createRun(db, todo.id, prompt, null);
     const l = new Live(run);
     live.set(run.id, l);
@@ -314,7 +316,7 @@ export function createServer(opts: ServerOptions) {
       finishRun(db, running.id, { ok: false, output: "", error: "abandoned: the service restarted" });
     }
     const extra = String(b.extra ?? "").slice(0, 4000);
-    const l = startExecution(todo, extra, tz(b.timezone));
+    const l = startExecution(todo, extra, tz(b.timezone), langOf(b.lang));
     // Detached (a page on another machine, through the bus, which cannot stream): the run, then GET /api/runs/:id.
     return detached ? json({ ok: true, run: l.run }) : streamRun(l, req);
   };
@@ -680,7 +682,7 @@ export function createServer(opts: ServerOptions) {
             if (parent) { todos.push(parent); ids.add(parent.id); }
           }
           const records = Object.fromEntries(todos.map((t) => [t.id, listRecords(db, t.id, 3)]));
-          const ctx = chatContext(todos, { now: now(), timezone: tz(u.searchParams.get("timezone")), lang, records });
+          const ctx = chatContext(todos, { now: now(), timezone: tz(u.searchParams.get("timezone")), lang: langOf(u.searchParams.get("lang")), records });
           return json({ ok: true, ...ctx, tools, timeoutMs: 300_000 }, 200, req);
         },
       },

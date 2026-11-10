@@ -55,7 +55,7 @@ deploy.sh              rsync alternative to the hook
 - `web/index.html` adds ai-space's `/_space/usage.js` (time in use) and `/_space/feedback.js` (the feedback button, shown only when the owner turns it on; ai-space `docs/feedback.md`) at runtime, so Bun's HTML bundler leaves them alone; without ai-space's router both are a harmless 404.
 - `/space/chat/*` is a dumb pass-through to ai-space (only `content-type`, `accept`, `content-length`, `if-none-match` forwarded; `timeout: false` upstream).
 - Tests sit next to the code (`src/*.test.ts`), use `:memory:` databases and a stub `Bun.serve` standing in for ai-space; no network, no model.
-- English in code, comments, docs and commits; the page and the model output are Chinese (`TODO_LANG=zh`).
+- English in code, comments, docs and commits. The page is in Chinese and English (中 / EN in the left column's foot): the head script picks `?lang=` (the panel's, kept in `localStorage` `todo-lang`), else the saved choice, else the browser, and sets `html[lang]`; `web/app.ts` writes every string through `L(zh, en)`, and the shell's English sits beside the Chinese in `data-en`, `data-en-title`, `data-en-aria` and `data-en-ph`. The page passes its language to the AI (`/api/ai/context?lang=`, `lang` in the execute body); other callers and notifications use `TODO_LANG` (default `zh`).
 - Commit messages follow Conventional Commits.
 
 ## Commands
