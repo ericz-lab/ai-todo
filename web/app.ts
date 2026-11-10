@@ -540,7 +540,7 @@ function closeDetail() {
 }
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => { if (!els.detail.hidden) closeDetail(); else closeDrawers(); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
 
@@ -895,6 +895,48 @@ const shownRecords = new Map<number, OperationRecord>();
 const recordHtml = (r: OperationRecord) => `<article class="operation-record" data-rid="${r.id}">
     <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button class="btn small" data-edit>编辑</button></div>
     <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="${esc(on(`/blobs/${image.key}`))}" target="_blank" rel="noopener"><img src="${esc(on(`/blobs/${image.key}`))}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
+// A record's pictures open in the page, not a new tab (the desktop client's webview cannot open one).
+const imageView = {
+  dialog: $<HTMLDialogElement>("#image-view"), img: $<HTMLImageElement>("#iv-img"), stage: $("#iv-stage"),
+  name: $("#iv-name"), count: $("#iv-count"), open: $<HTMLAnchorElement>("#iv-open"),
+  prev: $<HTMLButtonElement>("#iv-prev"), next: $<HTMLButtonElement>("#iv-next"),
+  list: [] as { src: string; name: string }[], at: 0,
+};
+function showImage(at: number) {
+  const v = imageView, image = v.list[at];
+  if (!image) return;
+  v.at = at;
+  v.dialog.classList.remove("zoomed");
+  v.img.src = image.src; v.img.alt = image.name;
+  v.name.textContent = image.name;
+  v.open.href = image.src;
+  v.count.textContent = v.list.length > 1 ? `${at + 1} / ${v.list.length}` : "";
+  v.prev.hidden = v.next.hidden = v.list.length < 2;
+}
+function stepImage(by: number) { const n = imageView.list.length; if (n > 1) showImage((imageView.at + by + n) % n); }
+imageView.prev.onclick = () => stepImage(-1);
+imageView.next.onclick = () => stepImage(1);
+$("#iv-close").onclick = () => imageView.dialog.close();
+imageView.dialog.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") { e.preventDefault(); stepImage(-1); } else if (e.key === "ArrowRight") { e.preventDefault(); stepImage(1); }
+});
+// The picture toggles fit / actual size, keeping the clicked point under the pointer; a click beside it closes.
+imageView.img.onclick = (e) => {
+  const { img, stage, dialog } = imageView;
+  if (dialog.classList.contains("zoomed") || (img.naturalWidth <= img.clientWidth && img.naturalHeight <= img.clientHeight)) { dialog.classList.remove("zoomed"); return; }
+  const box = img.getBoundingClientRect(), fx = (e.clientX - box.left) / box.width, fy = (e.clientY - box.top) / box.height;
+  dialog.classList.add("zoomed");
+  stage.scrollLeft = img.offsetLeft + fx * img.offsetWidth - stage.clientWidth / 2;
+  stage.scrollTop = img.offsetTop + fy * img.offsetHeight - stage.clientHeight / 2;
+};
+imageView.stage.onclick = (e) => { if (e.target === imageView.stage) imageView.dialog.close(); };
+imageView.dialog.addEventListener("close", () => { imageView.img.removeAttribute("src"); imageView.dialog.classList.remove("zoomed"); });
+function openImage(link: HTMLAnchorElement) {
+  const links = Array.from(link.closest(".record-images")?.querySelectorAll<HTMLAnchorElement>("a") ?? [link]);
+  imageView.list = links.map(a => ({ src: a.getAttribute("href") ?? "", name: a.querySelector("img")?.alt ?? "" }));
+  imageView.dialog.showModal();
+  showImage(Math.max(0, links.indexOf(link)));
+}
 function renderRecords(page: RecordPage, append = false) {
   if (!append) shownRecords.clear();
   for (const r of page.records) shownRecords.set(r.id, r);
@@ -908,6 +950,9 @@ d.recordContent.oninput = () => { if (cur) recordDrafts.set(cur.id, d.recordCont
 // Editing a record in place: the text becomes a box with save and cancel; the server keeps the earlier text.
 d.records.addEventListener("click", async (e) => {
   const target = e.target as HTMLElement;
+  const link = target.closest<HTMLAnchorElement>(".record-images a");
+  // A plain click opens the viewer; ctrl/⌘/middle click still opens the picture in a new tab.
+  if (link && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) { e.preventDefault(); openImage(link); return; }
   const article = target.closest<HTMLElement>(".operation-record");
   if (!article || !cur) return;
   const rid = Number(article.dataset.rid), record = shownRecords.get(rid);

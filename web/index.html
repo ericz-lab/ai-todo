@@ -180,6 +180,18 @@
   </div>
 </dialog>
 
+<dialog class="image-view" id="image-view" aria-label="查看图片">
+  <div class="iv-bar">
+    <span class="iv-name" id="iv-name"></span>
+    <span class="iv-count" id="iv-count"></span>
+    <a class="btn small" id="iv-open" target="_blank" rel="noopener">原图</a>
+    <button class="icon-btn" id="iv-close" title="关闭" aria-label="关闭"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="iv-stage" id="iv-stage"><img id="iv-img" alt="" title="点击放大 / 缩小"></div>
+  <button class="icon-btn iv-nav iv-prev" id="iv-prev" title="上一张" aria-label="上一张"><svg class="ic" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+  <button class="icon-btn iv-nav iv-next" id="iv-next" title="下一张" aria-label="下一张"><svg class="ic" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+</dialog>
+
 <script type="module" src="./app.ts"></script>
 </body>
 </html>

@@ -340,7 +340,22 @@ button { cursor: pointer; }
 .revision .md { font-size: 13.5px; color: var(--muted); }
 .record-images { display: flex; flex-wrap: wrap; gap: 8px; }
 .record-images:empty { display: none; }
-.record-images img { display: block; width: 120px; height: 100px; object-fit: contain; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); }
+.record-images img { display: block; width: 120px; height: 100px; object-fit: contain; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); cursor: zoom-in; }
+/* A record's picture full size, above the detail (a modal <dialog>: Esc, the backdrop and × close it; a click on the picture toggles fit / actual size). */
+.image-view { padding: 0; border: 0; background: transparent; color: #fff; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; overflow: hidden; }
+.image-view::backdrop { background: rgba(12,12,11,.86); }
+.iv-bar { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: linear-gradient(rgba(0,0,0,.45), transparent); }
+.iv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.iv-bar a.btn { text-decoration: none; }
+.iv-count { font-size: 13px; color: rgba(255,255,255,.75); font-variant-numeric: tabular-nums; }
+.iv-stage { width: 100%; height: 100%; overflow: auto; overscroll-behavior: contain; display: grid; place-items: center; padding: 56px 16px 16px; }
+.iv-stage img { display: block; max-width: 100%; max-height: calc(100dvh - 72px); object-fit: contain; cursor: zoom-in; border-radius: 4px; }
+.image-view.zoomed .iv-stage { place-items: start; }
+.image-view.zoomed .iv-stage img { max-width: none; max-height: none; cursor: zoom-out; margin: auto; }
+.iv-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; width: 40px; height: 40px; border-radius: 999px; }
+.iv-prev { left: 12px; } .iv-next { right: 12px; }
+.iv-nav[hidden] { display: none; }
+@media (max-width: 760px) { .iv-stage { padding: 52px 0 0; } .iv-prev { left: 6px; } .iv-next { right: 6px; } }
 .record-preview-item { display: flex; flex-direction: column; gap: 4px; }
 #d-record-images { display: block; max-width: 100%; }
 
