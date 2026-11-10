@@ -95,6 +95,8 @@ export function openDb(path: string): Database {
   db.exec(VERSIONS_SCHEMA);
   // The done list pages newest first by when each was finished (keyset on done_at, id).
   db.exec("CREATE INDEX IF NOT EXISTS todos_done ON todos(status, done_at DESC, id DESC)");
+  // The week's trend reads the done events by time; without this it scans every event.
+  db.exec("CREATE INDEX IF NOT EXISTS todo_events_kind ON todo_events(kind, at)");
   return db;
 }
 
@@ -609,8 +611,9 @@ export function reorderTodos(db: Database, ids: number[]): void {
 }
 
 export function tagCounts(db: Database, status: ListFilter["status"] = "active"): { tag: string; n: number }[] {
+  // Only the tags column: the full rows carry every plan, and this runs on each list read.
   const counts = new Map<string, number>();
-  for (const t of listTodos(db, { status })) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  for (const r of queryTodos(db, { status }, "SELECT tags FROM todos")) for (const tag of JSON.parse(r.tags as string) as string[]) counts.set(tag, (counts.get(tag) ?? 0) + 1);
   return [...counts].map(([tag, n]) => ({ tag, n })).sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag));
 }
 export function projectCounts(db: Database, status: ListFilter["status"] = "active"): { project: string; n: number }[] {

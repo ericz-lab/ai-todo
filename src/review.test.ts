@@ -211,6 +211,15 @@ describe("review through the service", () => {
     expect((await j("/api/todos?status=nope")).status).toBe(400);
   });
 
+  test("trend=1: the list carries the widget's week of completions, so the page needs one call", async () => {
+    const withTrend = (await j("/api/todos?status=review&fields=list&trend=1")).body as unknown as { trend: { t: string; v: number }[] };
+    const widget = (await j("/api/widget")).body as unknown as { blocks: { type: string; points?: unknown }[] };
+    expect(withTrend.trend).toHaveLength(7);
+    // Earlier tests finished tasks, so the widget has its trend block.
+    expect(withTrend.trend as unknown).toEqual(widget.blocks.find((b) => b.type === "trend")!.points);
+    expect((await j("/api/todos?status=review&fields=list")).body).not.toHaveProperty("trend");
+  });
+
   test("the done list: lean rows, pages with a cursor, gzip for a caller that accepts it", async () => {
     for (let i = 0; i < 60; i++) {
       const t = createTodo(db, { title: `old ${i}`, notes: "备注".repeat(400) });

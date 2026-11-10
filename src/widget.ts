@@ -26,11 +26,15 @@ const TREND_DAYS = 7;
 export const STALE_AFTER_S = 600;
 
 /** `now` as a local wall-clock string `YYYY-MM-DDTHH:MM` in `timezone`, the shape `due` is stored in. */
+/** One formatter per zone: building an Intl.DateTimeFormat costs far more than using one (the trend reads one per event). */
+const clocks = new Map<string, Intl.DateTimeFormat>();
 export function localClock(now: Date, timezone: string): string {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
-      .formatToParts(now).map((p) => [p.type, p.value]),
-  );
+  let fmt = clocks.get(timezone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    clocks.set(timezone, fmt);
+  }
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 

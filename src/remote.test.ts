@@ -43,6 +43,28 @@ describe("readEnvelope", () => {
     ] })) as unknown as typeof fetch;
     expect(await machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "seoul", token: "t", fetch: f })()).toEqual({ local: "seoul", peers: ["david", "thinkbook"], error: null });
   });
+
+  test("machines: past 30 s the kept list answers at once while the catalogue is read again", async () => {
+    let clock = 0;
+    let peers = ["david"];
+    let release = () => {};
+    let reads = 0;
+    const f = (async () => {
+      reads++;
+      if (reads > 1) await new Promise<void>((r) => { release = r; });
+      return Response.json({ apps: peers.map((p) => ({ app: `${p}/ai-todo`, peer: p, provides: ["ops"] })) });
+    }) as unknown as typeof fetch;
+    const find = machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "seoul", token: "t", fetch: f, now: () => clock });
+    expect((await find()).peers).toEqual(["david"]);
+    clock = 31_000; peers = ["david", "thinkbook"];
+    // The catalogue is slow now: the answer does not wait for it, and two requests read it once.
+    expect((await find()).peers).toEqual(["david"]);
+    expect((await find()).peers).toEqual(["david"]);
+    expect(reads).toBe(2);
+    release();
+    await Bun.sleep(0);
+    expect((await find()).peers).toEqual(["david", "thinkbook"]);
+  });
 });
 
 describe("one page over two machines", () => {
@@ -110,6 +132,16 @@ describe("one page over two machines", () => {
     expect((await call("seoul/ai-todo")).status).toBe(200);
     expect((await call("seoul/keep")).status).toBe(403);
     expect((await call()).status).toBe(403);
+  });
+
+  test("a large answer from the peer comes to the page gzipped", async () => {
+    for (let i = 0; i < 6; i++) await fetch(`${peerBase}/api/todos`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: `Long ${i}`, notes: "note ".repeat(600) }) });
+    const res = await fetch(`${base}/api/m/david/api/todos`, { headers: { "accept-encoding": "gzip" }, decompress: false } as RequestInit);
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    const body = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await res.arrayBuffer())))) as { todos: unknown[] };
+    expect(body.todos.length).toBeGreaterThanOrEqual(6);
+    const small = await fetch(`${base}/api/m/david/api/runs/999`, { headers: { "accept-encoding": "gzip" }, decompress: false } as RequestInit);
+    expect(small.headers.get("content-encoding")).toBeNull();
   });
 
   test("a run is read as it stands", async () => {

@@ -11,7 +11,7 @@ type Todo = { id: number; title: string; notes: string; plan: string; planVersio
 /** A row of the list (`GET /api/todos?fields=list`): no plan, the notes cut to an excerpt; the detail has the rest. */
 type Item = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string; m?: string };
 type Counts = { active: number; review: number; deferred: number; done: number };
-type ListAnswer = { todos: Item[]; tags: { tag: string; n: number }[]; projects: { project: string; n: number }[]; counts: Counts; total?: number; nextBefore?: string | null };
+type ListAnswer = { todos: Item[]; tags: { tag: string; n: number }[]; projects: { project: string; n: number }[]; counts: Counts; total?: number; nextBefore?: string | null; trend?: { t: string; v: number }[] };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
 type TodoEvent = { id: number; kind: string; data: Record<string, unknown>; at: string };
@@ -231,13 +231,13 @@ async function load() {
   const seq = ++loadSeq;
   const status = statusOf(view);
   const plain = status === "active" && !filterTag && !filterProject && !query;
-  // The list, the unfiltered active list (sidebar and cards) and the week's trend in parallel: one round trip, not two.
+  // The list (with the week's trend) and the unfiltered active list (sidebar and cards) in parallel: one round trip.
+  // A machine on an older version answers no trend; its widget has it.
   const from = (m: string) => Promise.all([
-    api<ListAnswer>(`/api/todos?${listQuery()}`, {}, m),
+    api<ListAnswer>(`/api/todos?${listQuery()}&trend=1`, {}, m).then(async (r) => [r, r.trend ?? await api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget", {}, m)
+      .then((x) => x.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null)] as const),
     plain ? null : api<ListAnswer>("/api/todos?status=active&fields=list", {}, m),
-    api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget", {}, m)
-      .then((x) => x.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null),
-  ]);
+  ]).then(([[r, w], a]) => [r, a, w] as const);
   // 全部机器 asks every machine at once; one that does not answer is named, the others still show.
   const parts = allMode()
     ? await Promise.all(machines.map((x) => from(x.via).then((p) => ({ m: x.via, p }), () => ({ m: x.via, p: null }))))
@@ -589,12 +589,24 @@ function rowHtml(t: Item, nested = false): string {
     ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行（完整模式，不是对话）", "Hand it to an AI agent to do (full mode, not a chat)")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
+/** The row shows the new state at once; the list is read again once the machine has it (and put back when it refused). */
+function showStatus(id: number, status: Status) {
+  const m = allMode() ? detailVia : undefined;
+  const t = todos.find((x) => x.id === id && x.m === m);
+  if (!t) return;
+  t.status = status;
+  t.doneAt = status === "done" ? new Date().toISOString() : null;
+  renderList();
+}
 async function setStatus(id: number, status: Status) {
-  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
+  showStatus(id, status);
+  try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); }
   catch (e) { toast((e as Error).message); }
+  await load().catch((e) => toast((e as Error).message));
 }
 /** The person's verdict on a task in review: accept closes it, reject sends it back to doing with the reason as a record. */
 async function verdict(id: number, v: "accept" | "reject", reason?: string): Promise<boolean> {
+  if (v === "accept" && cur?.id !== id) showStatus(id, "done");
   try {
     await api(`/api/todos/${id}/review`, { method: "POST", body: JSON.stringify({ verdict: v, reason, source: "manual" }) });
     toast(v === "accept" ? L("验收通过，已完成", "Accepted and done") : L("已退回，原因已写入操作记录", "Sent back; the reason is in the operation records"));

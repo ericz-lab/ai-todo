@@ -24,7 +24,7 @@ import {
   listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
 } from "./db.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
-import { widgetPayload } from "./widget.ts";
+import { completionsByDay, widgetPayload } from "./widget.ts";
 
 export interface ServerOptions {
   db: Database;
@@ -71,6 +71,15 @@ const json = (body: unknown, status = 200, req?: Request) => {
     if (bytes.length >= GZIP_MIN_BYTES) return new Response(Bun.gzipSync(bytes), { status, headers: { ...headers, "content-encoding": "gzip", vary: "accept-encoding" } });
   }
   return new Response(text, { status, headers });
+};
+/** Another machine's JSON answer, gzipped like `json` does: the bus hands it over uncompressed. */
+const gzipAnswer = async (res: Response, req: Request): Promise<Response> => {
+  if (!/json/.test(res.headers.get("content-type") ?? "") || res.headers.has("content-encoding") || !/\bgzip\b/.test(req.headers.get("accept-encoding") ?? "")) return res;
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length < GZIP_MIN_BYTES) return new Response(bytes, { status: res.status, headers: res.headers });
+  const headers = new Headers(res.headers);
+  headers.set("content-encoding", "gzip"); headers.set("vary", "accept-encoding");
+  return new Response(Bun.gzipSync(bytes), { status: res.status, headers });
 };
 const fail = (error: string, status = 400) => json({ ok: false, error }, status);
 /** A refused write: 409 with what is stored now when it was based on an older version, else 400. */
@@ -149,6 +158,8 @@ export function createServer(opts: ServerOptions) {
       counts: statusCounts(db),
       tags: tagCounts(db, scope),
       projects: projectCounts(db, scope),
+      // `trend=1`: the week's completions too, so the page needs no widget call for its chart.
+      ...(p.get("trend") === "1" ? { trend: completionsByDay(db, now(), defaultTz) } : {}),
     };
   };
 
@@ -401,7 +412,7 @@ export function createServer(opts: ServerOptions) {
     const env = await envelopeOf(req, rest);
     if (env === "too-large") return fail("too large to send to another machine (about 2.9 MB at most)", 413);
     if (!env) return fail("not found", 404);
-    return opts.forward(peer, env);
+    return gzipAnswer(await opts.forward(peer, env), req);
   };
 
   /** The bus capability `ops`: ai-todo on another space asks for one of this page's routes. */

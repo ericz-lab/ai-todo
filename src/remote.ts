@@ -76,13 +76,16 @@ type CapabilityList = { apps?: { app?: string; peer?: string; provides?: unknown
 const provides = (p: unknown, name: string): boolean =>
   Array.isArray(p) ? p.some((x) => (typeof x === "string" ? x : (x as { name?: string })?.name) === name) : Boolean(p && typeof p === "object" && name in (p as object));
 
-/** The peers running this app, read from ai-space's catalogue with the app token; kept for 30 s. */
+/**
+ * The peers running this app, read from ai-space's catalogue with the app token; kept for 30 s.
+ * Past that the list kept is answered at once and read again behind it, so no request waits for the catalogue.
+ */
 export function machineFinder(o: { apiUrl: string; app: string; local: string; token: string; fetch?: typeof fetch; now?: () => number }) {
   const f = o.fetch ?? fetch;
   const now = o.now ?? Date.now;
   let cache: { at: number; value: Machines } | null = null;
-  return async (): Promise<Machines> => {
-    if (cache && now() - cache.at < 30_000) return cache.value;
+  let reading: Promise<Machines> | null = null;
+  const read = async (): Promise<Machines> => {
     let value: Machines;
     try {
       const res = await f(`${o.apiUrl}/api/capabilities`, { headers: o.token ? { authorization: `Bearer ${o.token}` } : {}, signal: AbortSignal.timeout(8_000) });
@@ -96,6 +99,11 @@ export function machineFinder(o: { apiUrl: string; app: string; local: string; t
     }
     cache = { at: now(), value };
     return value;
+  };
+  return async (): Promise<Machines> => {
+    if (cache && now() - cache.at < 30_000) return cache.value;
+    reading ??= read().finally(() => { reading = null; });
+    return cache ? cache.value : reading;
   };
 }
 
