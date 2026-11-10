@@ -9,11 +9,33 @@
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "pack": "bun scripts/pack.ts",
     "check": "bun install && bun run typecheck && bun test",
     "cli": "bun src/cli.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
     "typescript": "^5.9.0"
+  },
+  "spacePackage": {
+    "include": [
+      "src",
+      "web",
+      "icon.png",
+      "package.json",
+      "tsconfig.json",
+      "agents",
+      "skills"
+    ],
+    "mode": "background",
+    "offline": {
+      "features": [
+        "The todo list with its records, plans and pictures kept on this machine"
+      ],
+      "online": [
+        "AI parsing, planning and execution",
+        "Lists on other machines"
+      ]
+    }
   }
 }
