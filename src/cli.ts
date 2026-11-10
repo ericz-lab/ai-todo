@@ -14,9 +14,12 @@
  *   bun src/cli.ts move <id> <parent-id|none>   make it a subtask of another todo, or take it out
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
  *   bun src/cli.ts execute <id> [--extra text]   hand the todo to the AI, print the result
- * The base URL is TODO_URL, else http://127.0.0.1:${PORT:-8970}.
+ * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
+ * package was given (<data dir>/service.port, written by its entry; scripts/pack.ts), else 8970.
  */
-const base = (process.env.TODO_URL ?? `http://127.0.0.1:${process.env.PORT ?? 8970}`).replace(/\/$/, "");
+const portFile = process.env.SPACE_APP_DATA_DIR ? Bun.file(`${process.env.SPACE_APP_DATA_DIR}/service.port`) : undefined;
+const assignedPort = portFile && (await portFile.exists()) ? (await portFile.text()).trim() : undefined;
+const base = (process.env.TODO_URL ?? `http://127.0.0.1:${process.env.PORT ?? assignedPort ?? 8970}`).replace(/\/$/, "");
 const [cmd, ...rest] = process.argv.slice(2);
 const flags: Record<string, string> = {};
 const args: string[] = [];
