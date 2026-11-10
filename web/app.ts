@@ -72,13 +72,15 @@ const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const PRI = ["", "低", "中", "高"];
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+/** One kit toast at a time (`.sp-toast`), shown for a few seconds. */
 const toast = (text: string) => {
-  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  document.querySelectorAll(".sp-toast").forEach((t) => t.remove());
   const el = document.createElement("div");
-  el.className = "toast"; el.textContent = text;
+  el.className = "sp-toast"; el.setAttribute("role", "status"); el.textContent = text;
   document.body.appendChild(el);
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.remove(), 2400);
+  toastTimer = setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 2400);
 };
 
 // ---- dates (local wall clock, like the server's strings)
@@ -108,12 +110,16 @@ const fmtAgo = (iso: string) => {
   return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-// ---- theme
-const applyTheme = (t: string) => {
-  document.documentElement.dataset.theme = t;
-  try { localStorage.setItem("todo-theme", t); } catch { /* private mode */ }
-  $("#theme-label").textContent = t === "dark" ? "浅色模式" : "深色模式";
-  $("#theme").querySelector("svg")!.innerHTML = t === "dark" ? ICON.sun : ICON.moon;
+// ---- theme: follow the system → light → dark, saved in this browser; the head script applied it before first paint
+type ThemeMode = "system" | "light" | "dark";
+const THEME_LABEL: Record<ThemeMode, string> = { system: "跟随系统", light: "浅色", dark: "深色" };
+const applyTheme = (mode: ThemeMode, save = true) => {
+  const root = document.documentElement;
+  if (mode === "system") delete root.dataset.theme; else root.dataset.theme = mode;
+  root.dataset.mode = mode;
+  if (save) { try { if (mode === "system") localStorage.removeItem("todo-theme"); else localStorage.setItem("todo-theme", mode); } catch { /* private mode */ } }
+  $("#theme-label").textContent = THEME_LABEL[mode];
+  $("#theme").title = `主题：${THEME_LABEL[mode]}，点按切换`;
 };
 /** Stroke icons (24px box) drawn by the page; the static ones live in index.html. */
 const ICON = {
@@ -130,10 +136,11 @@ const ICON = {
   layers: `<path d="m12 4 8.5 4.5L12 13 3.5 8.5Z"/><path d="m3.5 12.5 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/>`,
 };
 const svg = (name: keyof typeof ICON) => `<svg class="ic" viewBox="0 0 24 24">${ICON[name]}</svg>`;
-let savedTheme: string | null = null;
-try { savedTheme = localStorage.getItem("todo-theme"); } catch { /* private mode */ }
-applyTheme(savedTheme ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
-$("#theme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+/** The kit's square checkbox (`.sp-check`): the tick inside is drawn in the ink when checked. */
+const checkHtml = (checked: boolean, label = "") => `<label class="sp-check"><input type="checkbox"${checked ? " checked" : ""}${label ? ` aria-label="${esc(label)}"` : ""}><span><svg class="ic" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></label>`;
+const modeNow = (): ThemeMode => { const m = document.documentElement.dataset.mode; return m === "light" || m === "dark" ? m : "system"; };
+applyTheme(modeNow(), false);
+$("#theme").onclick = () => applyTheme(({ system: "light", light: "dark", dark: "system" } as const)[modeNow()]);
 
 // ---- state
 type View = "today" | "upcoming" | "all" | "review" | "done" | "deferred";
@@ -157,6 +164,16 @@ let tags: { tag: string; n: number }[] = [];
 let projects: { project: string; n: number }[] = [];
 /** Completions per day over the last week, from the panel card's trend (`/api/widget`); null when it could not be read. */
 let trend: { t: string; v: number | null }[] | null = null;
+/** The segmented filter over the open views: every row, the ones in progress, the ones with an AI run going. */
+type Seg = "" | "doing" | "ai";
+let seg: Seg = "";
+/**
+ * AI runs this page started or followed and has not seen end, by `<machine>#<todo id>` → run id. The list rows
+ * carry no run state, so this is what the page knows; `checkRuns` drops the ones that ended while nobody watched.
+ */
+const aiRuns = new Map<string, number>();
+const runKey = (id: number, m = at()) => `${m}#${id}`;
+const rowRunning = (t: Item) => aiRuns.has(runKey(t.id, t.m ?? via));
 const els = { list: $("#list"), side: $("#side"), rail: $("#rail"), scrim: $("#scrim"), chat: $("#chat"), detail: $("#detail") };
 $("#tz").textContent = TZ;
 
@@ -220,8 +237,22 @@ async function load() {
   renderSide();
   renderHead();
   renderKpis();
-  renderTrend();
   renderList();
+  void checkRuns();
+}
+/** Runs marked as going that this page no longer streams (the detail was closed): ask whether they ended. */
+async function checkRuns() {
+  const watched = liveAbort && cur ? runKey(cur.id) : "";
+  let changed = false;
+  await Promise.all([...aiRuns].filter(([k]) => k !== watched).map(async ([k, runId]) => {
+    const m = k.slice(0, k.lastIndexOf("#"));
+    try {
+      const s = await api<{ done: unknown }>(`/api/runs/${runId}`, {}, m);
+      if (s.done) { aiRuns.delete(k); changed = true; }
+    } catch { aiRuns.delete(k); changed = true; }
+  }));
+  // A run that ended may have moved its todo (to review): read the list again; the map is smaller, so this stops.
+  if (changed) void load();
 }
 /** The next page of the done list (of every machine that has more), appended. */
 async function loadMore(btn: HTMLButtonElement) {
@@ -256,39 +287,48 @@ function renderSide() {
   const today = todayStr();
   const late = active.filter(isLate).length;
   const n = { today: active.filter(isToday).length, upcoming: active.filter((t) => t.due && dayOf(t.due) > today).length, all: active.length };
-  $("#n-today").textContent = n.today ? String(n.today) : "";
-  $("#n-today").classList.toggle("alert", late > 0);
-  $("#n-today").title = late ? `${late} 项已过期` : "";
-  $("#n-upcoming").textContent = n.upcoming ? String(n.upcoming) : "";
-  $("#n-all").textContent = n.all ? String(n.all) : "";
+  /** A count in the left column; a state (late, waiting for acceptance) adds a dot with its word in the title. */
+  const count = (sel: string, v: number, dot = "", word = "") => {
+    const c = $(sel);
+    c.innerHTML = v ? `${dot ? `<span class="sp-dot ${dot}" aria-hidden="true"></span>` : ""}${v}` : "";
+    c.title = word;
+    if (word) c.setAttribute("aria-label", `${v}，${word}`); else c.removeAttribute("aria-label");
+  };
+  count("#n-today", n.today, late ? "bad" : "", late ? `${late} 项已过期` : "");
+  count("#n-upcoming", n.upcoming);
+  count("#n-all", n.all);
   // Every stage's size, whatever view is open; finished work waiting for the person stands out.
-  $("#n-review").textContent = counts?.review ? String(counts.review) : "";
-  $("#n-review").classList.toggle("warn", !!counts?.review);
-  $("#n-deferred").textContent = counts?.deferred ? String(counts.deferred) : "";
-  $("#n-done").textContent = counts?.done ? String(counts.done) : "";
-  document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === view && !filterProject && !filterTag));
-  const items = (list: { key: string; n: number }[], on: string | null, icon: keyof typeof ICON, label: (k: string) => string) =>
-    list.length ? list.map((x) => `<button class="view${on === x.key ? " on" : ""}" data-key="${esc(x.key)}">${svg(icon)}<span>${esc(label(x.key))}</span><b>${x.n}</b></button>`).join("") : `<span class="none">无</span>`;
-  $("#projects").innerHTML = items(projects.map((p) => ({ key: p.project, n: p.n })), filterProject, "folder", (k) => k);
-  $("#tags").innerHTML = items(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag, "hash", (k) => k);
+  count("#n-review", counts?.review ?? 0, counts?.review ? "warn" : "", counts?.review ? `${counts.review} 项待验收` : "");
+  count("#n-deferred", counts?.deferred ?? 0);
+  count("#n-done", counts?.done ?? 0);
+  document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view && !filterProject && !filterTag)));
+  const items = (list: { key: string; n: number }[], on: string | null) =>
+    list.length ? list.map((x) => `<li><button type="button" class="sp-nitem" data-key="${esc(x.key)}" aria-pressed="${on === x.key}"><span class="nl">${esc(x.key)}</span><span class="sp-nc">${x.n}</span></button></li>`).join("") : `<li class="none">无</li>`;
+  $("#projects").innerHTML = items(projects.map((p) => ({ key: p.project, n: p.n })), filterProject);
+  $("#tags").innerHTML = items(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag);
   $("#project-list").innerHTML = projects.map((p) => `<option value="${esc(p.project)}">`).join("");
   $("#projects").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
   $("#tags").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
 }
-document.querySelectorAll<HTMLElement>(".view[data-view]").forEach((b) => { b.onclick = () => { setView(b.dataset.view as View); closeDrawers(); void load(); }; });
+document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => { b.onclick = () => { setView(b.dataset.view as View); closeDrawers(); void load(); }; });
 
 // ---- header and toolbar
 const longDay = (d = new Date()) => `${d.getMonth() + 1}月${d.getDate()}日 周${"日一二三四五六"[d.getDay()]}`;
+/** The segmented filter applies to the open views; the archive views (review, deferred, done) are one state each. */
+const segApplies = () => view === "all" || view === "today" || view === "upcoming";
 function renderHead() {
-  const shown = view === "done" ? doneTotal : visible().length;
+  // The heading names the view and the day; the counts are in the left column and the stats tile, not repeated here.
   $("#view-title").textContent = VIEW_TITLE[view];
-  $("#view-sub").textContent = `${longDay()} · ${shown} 项${view === "done" ? "已完成" : view === "deferred" ? "暂缓" : view === "review" ? "待验收" : "待办"}`;
   $("#today-chip").textContent = longDay();
   document.title = `${VIEW_TITLE[view]} · AI 待办`;
+  $("#seg").hidden = !segApplies();
+  $("#seg").querySelectorAll<HTMLElement>("[data-seg]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.seg === seg)));
   const f: string[] = [];
-  if (filterProject) f.push(`<button class="filter" data-clear="project">${svg("folder")}<i>项目</i>${esc(filterProject)}${svg("x")}</button>`);
-  if (filterTag) f.push(`<button class="filter" data-clear="tag">${svg("hash")}<i>标签</i>${esc(filterTag)}${svg("x")}</button>`);
-  if (query) f.push(`<button class="filter" data-clear="query">${svg("search")}<i>搜索</i>${esc(query)}${svg("x")}</button>`);
+  const chip = (k: string, icon: keyof typeof ICON, label: string, value: string) =>
+    `<button type="button" class="sp-chip filter" data-clear="${k}" title="清除这个筛选">${svg(icon)}<i>${label}</i>${esc(value)}${svg("x")}</button>`;
+  if (filterProject) f.push(chip("project", "folder", "项目", filterProject));
+  if (filterTag) f.push(chip("tag", "hash", "标签", filterTag));
+  if (query) f.push(chip("query", "search", "搜索", query));
   $("#filters").innerHTML = f.join("");
   $("#filters").querySelectorAll<HTMLElement>("[data-clear]").forEach((b) => {
     b.onclick = () => {
@@ -297,13 +337,18 @@ function renderHead() {
       void load();
     };
   });
-  const late = active.filter(isLate).length;
-  $("#toolbar-note").textContent = late ? `${late} 项已过期` : `${active.length} 项未完成`;
 }
+$("#seg").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-seg]");
+  if (!b) return;
+  seg = (b.dataset.seg ?? "") as Seg;
+  renderHead();
+  renderList();
+});
 
 // ---- search: by title, notes, plan, project and tags, on the server (the list rows carry only a notes excerpt, the done list one page)
 const searchBox = $<HTMLInputElement>("#search");
-const visible = () => todos;
+const visible = () => (!segApplies() || !seg ? todos : todos.filter((t) => (seg === "doing" ? t.status === "doing" : rowRunning(t))));
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 const search = (text: string, now = false) => {
   clearTimeout(searchTimer);
@@ -317,10 +362,15 @@ searchBox.addEventListener("compositionend", () => search(searchBox.value.trim()
 searchBox.onkeydown = (e) => { if (e.key === "Escape") { searchBox.value = ""; search("", true); searchBox.blur(); } else if (e.key === "Enter" && !e.isComposing) search(searchBox.value.trim(), true); };
 document.addEventListener("keydown", (e) => {
   const tag = (document.activeElement as HTMLElement | null)?.tagName;
-  if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && els.detail.hidden && !(document.activeElement as HTMLElement | null)?.isContentEditable) { e.preventDefault(); searchBox.focus(); searchBox.select(); }
+  if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT" && els.detail.hidden && !(document.activeElement as HTMLElement | null)?.isContentEditable) {
+    e.preventDefault();
+    // Below 960 px the search is in the left column's drawer.
+    if (!matchMedia("(min-width: 960px)").matches) openDrawer("sp-open-nav");
+    searchBox.focus(); searchBox.select();
+  }
 });
 
-// ---- the three stat cards
+// ---- the stats tile: today, overdue and the week's completions (the trend) in one slim tile
 function renderKpis() {
   const today = todayStr();
   const todayN = active.filter(isToday);
@@ -329,34 +379,35 @@ function renderKpis() {
   const late = active.filter(isLate).sort((a, b) => a.due!.localeCompare(b.due!));
   const done = trend ? trend.reduce((s, p) => s + (p.v ?? 0), 0) : null;
   const doneToday = trend?.at(-1)?.v ?? 0;
-  const card = (tile: string, icon: keyof typeof ICON, label: string, value: string, unit: string, left: string, right: string) => `
-    <div class="kpi"><div class="kpi-head"><span class="tile ${tile}">${svg(icon)}</span>${label}</div>
-      <div class="kpi-value">${value}<small>${unit}</small></div>
-      <div class="kpi-foot"><span>${left}</span><span>${right}</span></div></div>`;
-  $("#kpis").innerHTML =
-    card("", "sun", "今天", String(todayN.length), "项", `今天到期 ${dueToday}`, doing ? `进行中 ${doing}` : "没有进行中") +
-    card(late.length ? "late" : "", "alert", "已过期", String(late.length), "项",
-      late.length ? `<span class="late">最早：${esc(late[0]!.title)}</span>` : "没有逾期任务", late.length ? esc(fmtDue(late[0]!.due!)) : "") +
-    card("ok", "check", "近 7 天完成", done === null ? "–" : String(done), "项",
-      done === null ? "完成记录读取失败" : `今天完成 <span class="ok">${doneToday}</span>`, done ? `日均 ${(done / 7).toFixed(1)}` : "");
+  // Today's share already finished: what was finished today over that plus what is still on today's list.
+  const share = todayN.length + doneToday ? Math.round((doneToday / (todayN.length + doneToday)) * 100) : 0;
+  const label = (text: string) => `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${text}</span>`;
+  const fig = (v: string) => `<span class="sp-fig">${v}</span><span class="sp-unit">项</span>`;
+  const todayStat = `<div class="stat st-today" title="今天到期 ${dueToday} 项 · ${doing ? `进行中 ${doing} 项` : "没有进行中"}">${label("今天")}${fig(String(todayN.length))}
+      <span class="sp-meter" role="img" aria-label="今天完成 ${doneToday} 项"><i style="--v:${share}%"></i></span>
+      <span class="st-note">${doneToday} 已完成</span><span class="st-note st-more">到期 ${dueToday} · ${doing ? `进行中 ${doing}` : "没有进行中"}</span></div>`;
+  // Overdue is a state, so it is a badge with its word: the count and the earliest one; nothing late, a quiet note.
+  const lateStat = late.length
+    ? `<div class="stat st-late"><span class="sp-badge bad st-first" title="最早：${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}"><span class="tx">已过期 ${late.length} 项 · 最早 ${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}</span></span></div>`
+    : `<div class="stat st-late st-more"><span class="st-note">没有逾期任务</span></div>`;
+  $("#kpis").innerHTML = `<div class="stats-in">${todayStat}${lateStat}${weekStat(done)}</div>`;
 }
-
-// ---- the week chart in the rail: completions per day, one bar each, the count on top
-function renderTrend() {
-  const head = `<div class="card-head"><span class="tile ai">${svg("chart")}</span><div class="card-title"><b>这一周的节奏</b><span>每天完成的任务数</span></div></div>`;
-  if (!trend) { $("#trend").innerHTML = `${head}<p class="trend-text sub">没能读到完成记录。</p>`; return; }
-  const total = trend.reduce((s, p) => s + (p.v ?? 0), 0);
+/** The week's completions: the figure, then one bar a day with its day under it (today in the accent). */
+function weekStat(done: number | null): string {
+  const head = `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>近 7 天完成</span>`;
+  if (!trend || done === null) return `<div class="stat st-week">${head}<span class="sp-fig">–</span><span class="st-note">完成记录读取失败</span></div>`;
   const max = Math.max(1, ...trend.map((p) => p.v ?? 0));
   const best = trend.reduce((a, p) => ((p.v ?? 0) > (a.v ?? 0) ? p : a), trend[0]!);
   const md = (t: string) => `${Number(t.slice(5, 7))}/${Number(t.slice(8, 10))}`;
-  const text = !total ? "这 7 天还没有完成的任务。挑一件小的先做掉。"
-    : `这 7 天完成了 <b>${total}</b> 项，${best.t === trend.at(-1)!.t ? "今天" : md(best.t)} 最多，${best.v} 项。${active.filter(isLate).length ? `还有 ${active.filter(isLate).length} 项过期没处理。` : ""}`;
-  $("#trend").innerHTML = `${head}<p class="trend-text">${text}</p>
-    <div class="chart" role="img" aria-label="近 7 天每天完成数：${trend.map((p) => `${md(p.t)} ${p.v ?? 0} 项`).join("，")}">
-      <div class="chart-head"><span>完成数，项</span><span>近 7 天</span></div>
-      <div class="bars">${trend.map((p) => `<div class="bar${p.v ? "" : " zero"}" title="${md(p.t)}：完成 ${p.v ?? 0} 项"><em>${p.v ?? 0}</em><i style="height:${((p.v ?? 0) / max) * 78}%"></i></div>`).join("")}</div>
-      <div class="bar-days">${trend.map((p, i) => `<span${i === trend!.length - 1 ? ` class="today"` : ""}>${i === trend!.length - 1 ? "今天" : md(p.t)}</span>`).join("")}</div>
-    </div>`;
+  const wd = (t: string) => "日一二三四五六"[new Date(`${t}T00:00`).getDay()];
+  const lateN = active.filter(isLate).length;
+  const text = !done ? "这 7 天还没有完成的任务。挑一件小的先做掉。"
+    : `这 7 天完成了 ${done} 项，${best.t === trend.at(-1)!.t ? "今天" : md(best.t)} 最多，${best.v} 项。${lateN ? `还有 ${lateN} 项过期没处理。` : ""}`;
+  const last = trend.length - 1;
+  return `<div class="stat st-week" title="${esc(text)}">${head}<span class="sp-fig">${done}</span><span class="sp-unit">项</span>
+      <div class="week" role="img" aria-label="${esc(text)} 每天：${trend.map((p) => `${md(p.t)} ${p.v ?? 0} 项`).join("，")}">
+        ${trend.map((p, i) => `<span class="day" title="${md(p.t)}：完成 ${p.v ?? 0} 项"><i class="b${i === last ? " now" : ""}" style="--h:${Math.max(2, Math.round(((p.v ?? 0) / max) * 24))}px"></i><small>${i === last ? "今" : wd(p.t)}</small></span>`).join("")}
+      </div><span class="st-note st-more">日均 ${(done / 7).toFixed(1)}</span></div>`;
 }
 
 // ---- the list
@@ -391,24 +442,28 @@ function groups(): Group[] {
   const order = view === "today" ? ["doing", "late", "today"] : view === "upcoming" ? ["tomorrow", "week", "later"] : ["doing", "late", "today", "tomorrow", "week", "later", "none"];
   return order.map((k) => g[k]!).filter((x) => x.items.length);
 }
+/** The add row at the foot of an open view: a todo typed there lands on the view's day and the project and tag filtered on. */
+const addDefaults = () => ({ due: view === "today" ? todayStr() : view === "upcoming" ? addDays(1) : null, project: filterProject, tags: filterTag ? [filterTag] : [] });
+const addHint = () => `${view === "today" ? "添加到今天" : view === "upcoming" ? "添加到明天" : "添加待办"}${allMode() ? `（${nameOf("")}）` : ""}，回车保存`;
 function renderList() {
   const gs = groups();
+  const adds = segApplies();
+  const addRow = adds ? `<label class="add-row"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="sp-sr">新建待办</span><input id="add-input" placeholder="${esc(addHint())}" maxlength="300" autocomplete="off"></label>` : "";
   if (!gs.length) {
-    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : view === "review" ? "没有等待验收的任务。AI 或你做完一项后提交验收，会出现在这里。" : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
-    els.list.innerHTML = `<div class="empty"><b>${query ? "没有结果" : view === "done" || view === "review" ? "空" : "轻松"}</b>${hint}</div>`;
+    const hint = query ? `没有和「${esc(query)}」匹配的任务。` : seg === "doing" && adds ? "没有进行中的任务。" : seg === "ai" && adds ? "这个页面没有正在进行的 AI 执行。在任务详情里点「AI 执行」开始一次。" : view === "review" ? "没有等待验收的任务。AI 或你做完一项后提交验收，会出现在这里。" : view === "deferred" ? "没有暂不处理的任务。可在任务详情中暂缓，之后在这里恢复。" : view === "today" ? "今天没有安排。看看「即将」，或在右边写下要做的事。" : view === "upcoming" ? "接下来几天没有安排。" : view === "done" ? "还没有完成的任务。" : "清单是空的。在右边写点什么，让 AI 拆成任务。";
+    els.list.innerHTML = `<div class="sp-state"><span class="ico" aria-hidden="true">${svg(query ? "search" : "check")}</span><b>${query ? "没有结果" : view === "done" || view === "review" ? "空" : "轻松"}</b><p>${hint}</p></div>${addRow}`;
+    bindAdd();
     return;
   }
   const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(keyOf(t.id, t.m))?.length ?? 0), 0), 0);
-  const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button class="btn small" id="load-more">加载更多</button>` : ""}<b>已显示 ${total} / ${doneTotal} 项</b></div>`
-    : view === "deferred" || view === "review" ? `<div class="list-foot"><b>共 ${total} 项</b></div>`
-    : `<div class="list-foot"><span class="legend" style="--c:var(--danger)">已过期，先处理或改日期</span><span class="legend" style="--c:var(--bar)">今天到期</span><b>共 ${total} 项</b></div>`;
-  els.list.innerHTML = gs.map((g, i) => `
-    <section class="group">
-      <div class="cols${g.late ? " late" : ""}"><div class="gname">${g.title}<b>${g.items.length}</b></div><span>截止</span><span>优先级</span><span class="c-proj-h">项目</span><span></span></div>
-      <div class="group-name${g.late ? " late" : ""}">${g.title}<b>${g.items.length}</b></div>
+  // The done list pages: how much of it is shown, and the next page. Elsewhere the count is in the left column already.
+  const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button type="button" class="sp-btn sm" id="load-more">加载更多</button>` : ""}<span>已显示 ${total} / ${doneTotal} 项</span></div>` : "";
+  els.list.innerHTML = `<div class="cols" aria-hidden="true"><span></span><span>待办</span><span>截止</span><span>优先</span><span class="c-proj-h">项目</span><span>状态</span></div>`
+    + gs.map((g) => `
+    <div class="grp" role="group" aria-label="${esc(g.title)}">
+      <div class="sp-gh${g.late ? " late" : ""}">${g.title}<span class="n">${g.items.length}</span></div>
       ${g.items.map((t) => rowHtml(t) + (kids.get(keyOf(t.id, t.m)) ?? []).map((k) => rowHtml(k, true)).join("")).join("")}
-      ${i === gs.length - 1 ? foot : ""}
-    </section>`).join("");
+    </div>`).join("") + addRow + foot;
   els.list.querySelectorAll<HTMLElement>(".todo").forEach((row) => {
     const id = Number(row.dataset.id);
     // In the all-machines view, what a row does goes to that row's machine.
@@ -429,31 +484,67 @@ function renderList() {
   });
   const more = els.list.querySelector<HTMLButtonElement>("#load-more");
   if (more) more.onclick = () => void loadMore(more);
+  bindAdd();
+}
+/** Enter in the add row creates the todo (on this machine in the all-machines view) and keeps the row ready for the next. */
+function bindAdd() {
+  const input = els.list.querySelector<HTMLInputElement>("#add-input");
+  if (!input) return;
+  input.onkeydown = async (e) => {
+    if (e.key === "Escape") { input.value = ""; input.blur(); return; }
+    if (e.key !== "Enter" || e.isComposing) return;
+    const title = input.value.trim();
+    if (!title) return;
+    input.disabled = true;
+    try {
+      await api("/api/todos", { method: "POST", body: JSON.stringify({ title, source: "manual", ...addDefaults() }) }, allMode() ? "" : via);
+      input.value = "";
+      toast("已添加");
+      await load();
+    } catch (err) { toast((err as Error).message); input.disabled = false; return; }
+    els.list.querySelector<HTMLInputElement>("#add-input")?.focus();
+  };
+}
+/** 新建待办: the add row of an open view; from an archive view it first goes to 全部. */
+$("#new-todo").onclick = async () => {
+  if (!segApplies()) { setView("all"); await load(); }
+  if (seg) { seg = ""; renderHead(); renderList(); }
+  const input = els.list.querySelector<HTMLInputElement>("#add-input");
+  input?.scrollIntoView({ block: "nearest" });
+  input?.focus();
+};
+/** A row's state in words: the badge, and for a task in review the verdict buttons. */
+function statusHtml(t: Item, late: boolean): string {
+  if (t.status === "review") return `<span class="sp-badge warn">待验收</span>`;
+  if (rowRunning(t)) return `<span class="sp-badge ai live">AI 执行中</span>`;
+  if (t.status === "doing") return `<span class="sp-badge run">进行中</span>`;
+  if (late) return `<span class="sp-badge bad">已过期</span>`;
+  if (t.status === "deferred") return `<span class="sp-badge off">暂不处理</span>`;
+  if (t.status === "done") return `<span class="sp-badge ok">已完成</span>`;
+  return "";
 }
 function rowHtml(t: Item, nested = false): string {
   const line: string[] = [];
   const open = t.status !== "done" && t.status !== "deferred" && t.status !== "review";
   if (t.m !== undefined) line.push(`<span class="mach">${esc(nameOf(t.m))}</span>`);
-  if (t.status === "doing") line.push(`<span style="color:var(--ai)">进行中</span>`);
-  if (t.status === "review") line.push(`<span style="color:var(--warn)">待验收</span>`);
-  if (t.subtasks.total) line.push(`子任务 ${t.subtasks.done}/${t.subtasks.total}`);
+  if (t.subtasks.total) line.push(`<span class="subp"><span class="sp-meter" aria-hidden="true"><i style="--v:${Math.round((t.subtasks.done / t.subtasks.total) * 100)}%"></i></span>子任务 ${t.subtasks.done}/${t.subtasks.total}</span>`);
   if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId, t.m) ?? `#${t.parentId}`)}`);
   if (t.tags.length) line.push(t.tags.map((tag) => `#${esc(tag)}`).join(" "));
   if (t.status === "done" && t.doneAt) line.push(`完成于 ${esc(fmtAgo(t.doneAt))}`);
   if (t.notesExcerpt) line.push(esc(t.notesExcerpt.slice(0, 80)));
   const late = !!t.due && isLate(t) && open;
   const due = !t.due ? `<span class="dash">—</span>`
-    : `<span class="pill${late ? " late" : open && dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`;
-  const pri = t.priority ? `<span class="pri p${t.priority}"><span>${PRI[t.priority]}</span></span>` : `<span class="dash">—</span>`;
+    : `<span class="due${late ? " late" : open && dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`;
+  const pri = t.priority ? `<span class="sp-chip pri p${t.priority}">${PRI[t.priority]}</span>` : `<span class="dash">—</span>`;
+  const review = t.status === "review";
   return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}"${t.m !== undefined ? ` data-m="${esc(t.m)}"` : ""} tabindex="0">
-    <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""} aria-label="完成 ${esc(t.title)}"><span></span></label>
+    ${checkHtml(t.status === "done", `完成 ${t.title}`)}
     <div class="t"><span class="title">${esc(t.title)}</span><span class="line">${line.join(" · ")}</span></div>
     <div class="c-due">${due}</div>
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
-    <div class="ops">${t.status === "review"
-      ? `<button class="btn ok" data-op="accept" title="验收通过，标为完成">通过</button><button class="btn" data-op="reject" title="验收不通过，写明原因后退回">退回</button>`
-      : `<button class="btn" data-op="run" title="交给 AI 智能体执行（完整模式，不是对话）"><span class="spark">✦</span> 执行</button><button class="btn" data-op="edit">详情</button>`}</div>
+    <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="验收通过，标为完成">通过</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="验收不通过，写明原因后退回">退回</button></span>` : ""}</div>
+    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="交给 AI 智能体执行（完整模式，不是对话）"><span class="spark" aria-hidden="true">✦</span>执行</button><button type="button" class="sp-btn sm" data-op="edit">详情</button></div>`}
   </div>`;
 }
 async function setStatus(id: number, status: Status) {
@@ -485,6 +576,12 @@ const d = {
 };
 let curSubs: Todo[] = [];
 type Detail = RecordPage & { todo: Todo; planMeta: PlanMeta | null; parent: Todo | null; subtasks: Todo[]; events: TodoEvent[]; runs: Run[] };
+/** The detail is a modal over the page: the page behind it does not scroll while it is open. */
+function showDetailEl(on: boolean) {
+  els.detail.hidden = !on;
+  document.body.classList.toggle("modal-open", on);
+  if (on) closeDrawers();
+}
 async function openDetail(id: number, execute = false) {
   // Moving from one todo to another (a subtask, its parent) keeps what was typed in the first.
   if (cur) { clearTimeout(saveTimer); await flushSave(); await flushPlan(); liveAbort?.abort(); liveAbort = null; }
@@ -499,10 +596,11 @@ async function openDetail(id: number, execute = false) {
   renderRecords(r);
   d.recordContent.value = recordDrafts.get(id) ?? "";
   renderRecordImages();
-  els.detail.hidden = false; els.scrim.hidden = false;
+  showDetailEl(true);
   // In the all-machines view the address names the todo's machine too (`at`), so a reload opens the same one.
   history.replaceState(null, "", allMode() ? `?${new URLSearchParams({ m: ALL, ...(detailVia ? { at: detailVia } : {}), todo: String(id) })}` : `?todo=${id}`);
   const running = r.runs.find((x) => x.status === "running");
+  if (!running && aiRuns.delete(runKey(id))) renderList();
   if (running) followRun(`/api/runs/${running.id}/stream`, {});
   else if (execute) void runExecute();
   else d.title.focus();
@@ -534,12 +632,12 @@ function closeDetail() {
   clearTimeout(saveTimer); void flushSave(); void flushPlan();
   liveAbort?.abort(); liveAbort = null;
   if (plan.full.open) plan.full.close();
-  cur = null; els.detail.hidden = true; els.scrim.hidden = true;
+  cur = null; showDetailEl(false);
   syncUrl();
   void load();
 }
 $("#d-close").onclick = closeDetail;
-els.scrim.onclick = () => { if (!els.detail.hidden) closeDetail(); else closeDrawers(); };
+els.scrim.onclick = () => closeDrawers();
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
@@ -698,20 +796,20 @@ async function loadPlanVersions() {
   try {
     const r = await api<{ versions: PlanVersionRow[] }>(`/api/todos/${id}/plan/versions`);
     if (cur?.id !== id) return;
-    plan.list.innerHTML = r.versions.map((v) => `<button class="plan-ver${v.version === plan.version ? " current" : ""}" data-version="${v.version}">
-      <b>v${v.version}</b><span>${esc(fmtAgo(v.createdAt))} · ${esc(v.source)} · ${v.chars} 字${v.version === plan.version ? " · 当前" : ""}</span><i>${esc(v.excerpt || "（空）")}</i></button>`).join("") || `<p class="record-hint">还没有版本</p>`;
+    plan.list.innerHTML = r.versions.map((v) => `<button type="button" class="plan-ver${v.version === plan.version ? " current" : ""}" data-version="${v.version}" aria-pressed="false">
+      <b>v${v.version}</b><span>${esc(fmtAgo(v.createdAt))} · ${esc(v.source)} · ${v.chars} 字${v.version === plan.version ? " · 当前" : ""}</span><i>${esc(v.excerpt || "（空）")}</i></button>`).join("") || `<p class="sp-hint">还没有版本</p>`;
   } catch (e) { toast((e as Error).message); }
 }
 plan.list.onclick = async (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-version]");
   if (!b || !cur) return;
   const id = cur.id, n = Number(b.dataset.version);
-  plan.list.querySelectorAll(".plan-ver").forEach((x) => x.classList.toggle("on", x === b));
+  plan.list.querySelectorAll(".plan-ver").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   try {
     const { version: v } = await api<{ version: PlanVersionRow & { content: string } }>(`/api/todos/${id}/plan/versions?version=${n}`);
     if (cur?.id !== id) return;
-    plan.show.innerHTML = `<div class="run-head"><b>v${v.version}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${v.version === plan.version ? `<span>当前版本</span>` : `<button class="btn small" data-restore="${v.version}">恢复此版</button>`}</div>
-      <div class="md">${v.content ? renderMd(v.content) : `<p class="record-hint">（空）</p>`}</div>`;
+    plan.show.innerHTML = `<div class="run-head"><b>v${v.version}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${v.version === plan.version ? `<span>当前版本</span>` : `<button type="button" class="sp-btn sm" data-restore="${v.version}">恢复此版</button>`}</div>
+      <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">（空）</p>`}</div>`;
     const restore = plan.show.querySelector<HTMLButtonElement>("[data-restore]");
     if (restore) restore.onclick = async () => {
       // A restore is a new version with that text; nothing is removed.
@@ -774,17 +872,17 @@ function renderSubs(parent: Todo | null, subs: Todo[]) {
   const done = subs.filter((s) => s.status === "done").length;
   d.subsN.textContent = isSub ? "" : subs.length ? `${done}/${subs.length}` : "";
   if (isSub) {
-    d.parent.innerHTML = `属于 <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button class="btn small" data-op="detach">移出</button>`;
+    d.parent.innerHTML = `属于 <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button type="button" class="sp-btn sm" data-op="detach">移出</button>`;
     $<HTMLElement>("[data-open]", d.parent).onclick = (e) => { e.preventDefault(); void openDetail(cur!.parentId!); };
     $<HTMLElement>("[data-op=detach]", d.parent).onclick = () => void patchSub(cur!.id, { parentId: null }, "已移出，成为独立任务");
     return;
   }
   d.subsList.innerHTML = subs.map((s) => `
     <div class="subrow ${s.status}" data-id="${s.id}">
-      <label class="check"><input type="checkbox"${s.status === "done" ? " checked" : ""}><span></span></label>
+      ${checkHtml(s.status === "done", `完成 ${s.title}`)}
       <span class="title">${esc(s.title)}</span>
-      ${s.status === "deferred" ? `<span class="badge">暂不处理</span>` : ""}
-      ${s.due ? `<span class="badge due${isLate(s) && s.status !== "done" && s.status !== "deferred" && cur?.status !== "deferred" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
+      ${s.status === "deferred" ? `<span class="sp-badge off">暂不处理</span>` : ""}
+      ${s.due ? `<span class="sp-chip due${isLate(s) && s.status !== "done" && s.status !== "deferred" && cur?.status !== "deferred" ? " late" : ""}">${esc(fmtDue(s.due))}</span>` : ""}
     </div>`).join("");
   d.subsList.querySelectorAll<HTMLElement>(".subrow").forEach((row) => {
     const id = Number(row.dataset.id);
@@ -854,7 +952,7 @@ d.rejectSend.onclick = async () => {
   finally { d.rejectSend.disabled = false; }
 };
 d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
-$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; els.detail.hidden = true; els.scrim.hidden = true; toast("已删除"); void load(); };
+$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`)) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; showDetailEl(false); toast("已删除"); void load(); };
 
 // Drafts stay with their todo when the detail is closed or another task is opened.
 const recordDrafts = new Map<number, string>();
@@ -864,7 +962,7 @@ const imagePreview = $("#d-record-preview");
 function renderRecordImages() {
   imageInput.value = "";
   imagePreview.innerHTML = (cur ? recordImages.get(cur.id) ?? [] : []).map((image, i) =>
-    `<div class="record-preview-item"><img src="${esc(image.url)}" alt="${esc(image.file.name)}"><button type="button" class="btn small" data-remove-image="${i}" aria-label="移除图片 ${esc(image.file.name)}">移除</button></div>`).join("");
+    `<div class="record-preview-item"><img src="${esc(image.url)}" alt="${esc(image.file.name)}"><button type="button" class="sp-btn sm" data-remove-image="${i}" aria-label="移除图片 ${esc(image.file.name)}">移除</button></div>`).join("");
 }
 function addRecordImages(files: File[]) {
   if (!cur) return;
@@ -893,7 +991,7 @@ let recordCursor: number | null = null;
 /** The records on screen by id, for editing in place. */
 const shownRecords = new Map<number, OperationRecord>();
 const recordHtml = (r: OperationRecord) => `<article class="operation-record" data-rid="${r.id}">
-    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button class="btn small" data-edit>编辑</button></div>
+    <div class="run-head"><time datetime="${esc(r.createdAt)}">${esc(new Date(r.createdAt).toLocaleString())}</time><span>${esc(r.source)}</span>${r.revision && r.editedAt ? `<button type="button" class="edited" data-revisions title="查看旧版本">已编辑 · ${esc(fmtAgo(r.editedAt))}</button>` : ""}<button type="button" class="sp-btn ghost sm" data-edit>编辑</button></div>
     <div class="md">${renderMd(r.content)}</div><div class="record-images">${(r.attachments ?? []).map(image => `<a href="${esc(on(`/blobs/${image.key}`))}" target="_blank" rel="noopener"><img src="${esc(on(`/blobs/${image.key}`))}" alt="${esc(image.name)}" loading="lazy"></a>`).join("")}</div></article>`;
 // A record's pictures open in the page, not a new tab (the desktop client's webview cannot open one).
 const imageView = {
@@ -942,7 +1040,7 @@ function renderRecords(page: RecordPage, append = false) {
   for (const r of page.records) shownRecords.set(r.id, r);
   const html = page.records.map(recordHtml).join("");
   if (append) d.records.insertAdjacentHTML("beforeend", html);
-  else d.records.innerHTML = html || `<p class="record-hint">还没有操作记录</p>`;
+  else d.records.innerHTML = html || `<p class="sp-hint">还没有操作记录</p>`;
   recordCursor = page.recordsNextBefore;
   d.recordMore.hidden = recordCursor === null;
 }
@@ -962,8 +1060,8 @@ d.records.addEventListener("click", async (e) => {
     if (article.querySelector(".record-edit")) return;
     const md = $(".md", article);
     md.hidden = true;
-    const box = el(`<div class="record-edit"><textarea class="d-notes" maxlength="20000" spellcheck="false"></textarea>
-      <div class="record-edit-bar"><span class="record-hint">只在更正事实时编辑；结论变了请追加新记录。旧版本会保留。</span><div class="grow"></div><button class="btn small" data-cancel>取消</button><button class="btn small primary" data-save>保存</button></div></div>`);
+    const box = el(`<div class="record-edit"><textarea class="sp-textarea d-notes" maxlength="20000" spellcheck="false" aria-label="编辑记录"></textarea>
+      <div class="record-edit-bar"><span class="sp-hint">只在更正事实时编辑；结论变了请追加新记录。旧版本会保留。</span><div class="grow"></div><button type="button" class="sp-btn sm" data-cancel>取消</button><button type="button" class="sp-btn sm" data-save>保存</button></div></div>`);
     const ta = $<HTMLTextAreaElement>("textarea", box);
     ta.value = record.content;
     md.after(box);
@@ -1002,7 +1100,7 @@ d.records.addEventListener("click", async (e) => {
       const { revisions } = await api<{ revisions: RecordRevision[] }>(`/api/todos/${todoId}/records/${rid}/revisions`);
       const list = el(`<div class="revisions">${[...revisions].reverse().map((v, i) => `<div class="revision">
         <div class="run-head"><b>${v.revision === 0 ? "原文" : `修订 ${v.revision}`}</b><span>${esc(new Date(v.createdAt).toLocaleString())}</span><span>${esc(v.source)}</span>${i === 0 ? "<span>当前</span>" : ""}</div>
-        <div class="md">${v.content ? renderMd(v.content) : `<p class="record-hint">（无文字）</p>`}</div></div>`).join("")}</div>`);
+        <div class="md">${v.content ? renderMd(v.content) : `<p class="sp-hint">（无文字）</p>`}</div></div>`).join("")}</div>`);
       $(".record-images", article).after(list);
     } catch (err) { toast((err as Error).message); }
   }
@@ -1045,9 +1143,10 @@ function renderRuns(runs: Run[]) {
   d.runs.querySelectorAll<HTMLElement>("[data-op=done]").forEach((b) => { b.onclick = () => { d.done.checked = true; d.done.onchange!(new Event("change")); }; });
 }
 function runHtml(r: Run): string {
-  const st = r.status === "running" ? "执行中" : r.status === "ok" ? "完成" : "失败";
+  // Running is ink (the kit's AI mark), finished green, failed red: each with its word.
+  const st = r.status === "running" ? `<span class="sp-badge ai live">执行中</span>` : r.status === "ok" ? `<span class="sp-badge ok">完成</span>` : `<span class="sp-badge bad">失败</span>`;
   return `<div class="run${r.status === "running" ? " live" : ""}" data-run="${r.id}">
-    <div class="run-head"><span class="st ${r.status}">${st}</span><span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span style="color:var(--danger)">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button class="btn small" data-op="done">${cur?.status === "review" ? "验收通过" : "标记完成"}</button>` : ""}</div>
+    <div class="run-head">${st}<span>${esc(fmtAgo(r.startedAt))}</span>${r.model ? `<span>${esc(r.model)}</span>` : ""}${r.costUsd != null ? `<span>$${r.costUsd.toFixed(3)}</span>` : ""}${r.error ? `<span class="err-text">${esc(r.error)}</span>` : ""}${r.status === "ok" ? `<button type="button" class="sp-btn sm" data-op="done">${cur?.status === "review" ? "验收通过" : "标记完成"}</button>` : ""}</div>
     <div class="md">${renderMd(r.output)}</div>
   </div>`;
 }
@@ -1094,6 +1193,7 @@ function followRun(url: string, init: RequestInit) {
   const ac = new AbortController(); liveAbort = ac;
   d.execute.disabled = true;
   const todoId = cur?.id;
+  const runM = at();
   void (async () => {
     let card: HTMLElement | null = null; let text = "";
     let frame = 0;
@@ -1113,11 +1213,14 @@ function followRun(url: string, init: RequestInit) {
         const p = JSON.parse(data) as { text?: string; run?: Run; error?: string };
         if (event === "run" && p.run) {
           if (cur?.id !== todoId) return;
+          // The row says AI 执行中 until the run ends, also after the detail is closed (checkRuns).
+          if (todoId !== undefined && !aiRuns.has(runKey(todoId, runM))) { aiRuns.set(runKey(todoId, runM), p.run.id); renderList(); }
           card = d.runs.querySelector<HTMLElement>(`[data-run="${p.run.id}"]`);
           if (!card) { d.runs.insertAdjacentHTML("afterbegin", runHtml({ ...p.run, output: "" })); card = d.runs.firstElementChild as HTMLElement; }
           else { card.classList.add("live"); $(".md", card).innerHTML = ""; }
         } else if (event === "delta") { text += p.text ?? ""; paint(); }
         else if (event === "done" || event === "error") {
+          if (todoId !== undefined && aiRuns.delete(runKey(todoId, runM))) renderList();
           if (p.run && cur?.id === todoId) { const r = await api<{ runs: Run[]; events: TodoEvent[] }>(`/api/todos/${todoId}`); renderRuns(r.runs); renderEvents(r.events); }
           if (event === "error") toast(`执行失败：${p.error ?? "未知错误"}`); else toast("AI 执行完成");
         }
@@ -1152,28 +1255,34 @@ d.execute.onclick = () => void runExecute();
 // ---- the AI panel
 const FENCE_RE = /```todo-(drafts|actions)[ \t]*\r?\n[\s\S]*?```\s*/g;
 const hasBlock = (text: string, kind: "drafts" | "actions") => new RegExp("```todo-" + kind + "[ \\t]*\\r?\\n").test(text);
-/** Styles for what this page puts inside the widget's shadow root; the page stylesheet does not reach there, the tokens do. */
+/**
+ * Styles for what this page puts inside the widget's shadow root. The page stylesheet does not reach there; the kit's
+ * tokens do (custom properties on :root inherit through the shadow boundary), so these rules use them: a draft is a
+ * well like the kit's `.sp-draft`, its add button the quiet pill (the page's one ink button is 新建待办), a checked box ink.
+ */
 const INNER_CSS = `
-.drafts { margin: 8px 0 2px; display: flex; flex-direction: column; gap: 6px; }
-.draft { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start; border-radius: 12px; padding: 8px 10px; background: var(--glass-strong); border: 1px solid var(--glass-border); }
+.drafts { margin: 10px 0 2px; display: flex; flex-direction: column; gap: 8px; }
+.draft { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: start; border-radius: var(--r-well); padding: 10px 12px; background: var(--well); }
 .draft.off { opacity: .45; }
 .draft input, .draft select, .draft textarea { font: inherit; color: inherit; }
-.draft input[type=checkbox] { margin: 4px 0 0; accent-color: var(--ai); }
-.draft .title { border: 0; background: transparent; outline: none; font-weight: 700; font-size: 14px; width: 100%; }
-.draft .fields { grid-column: 2; display: flex; gap: 5px; flex-wrap: wrap; }
-.draft .fields input, .draft .fields select { border: 1px solid var(--hairline); background: transparent; border-radius: 8px; padding: 1px 7px; font-size: 12px; color: var(--muted); outline: none; }
-.draft .fields input:focus { border-color: var(--ai); }
-.draft .due { width: 165px; } .draft .project { width: 100px; } .draft .tags { width: 140px; }
-.draft .notes { grid-column: 2; border: 0; background: transparent; outline: none; font-size: 12.5px; color: var(--muted); resize: vertical; min-height: 18px; }
-.bar { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
-.bar .n { font-size: 12.5px; color: var(--muted); }
-.btn { border-radius: 999px; padding: 5px 14px; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text); }
-.btn.primary { background: var(--ai); color: var(--on-ai); border-color: transparent; }
-.btn:disabled { opacity: .5; cursor: default; }
-.applied { margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
-.applied li { list-style: none; padding: 3px 10px; border-radius: 8px; background: var(--ai-soft); color: var(--ai); }
-.applied li.bad { background: rgba(209,52,76,.12); color: var(--danger); }
-.done-note { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.draft input[type=checkbox] { width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--btn-ink-bg); }
+.draft .title { border: 0; background: transparent; outline: none; font-size: 15px; font-weight: 500; color: var(--ink); width: 100%; min-width: 0; padding: 0; }
+.draft .fields { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; }
+.draft .fields input, .draft .fields select { height: 26px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-pill); padding: 0 10px; font-size: 12px; color: var(--body); outline: none; min-width: 0; }
+.draft .fields input:focus, .draft .fields select:focus, .draft .title:focus-visible, .draft .notes:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.draft .due { width: 170px; } .draft .project { width: 100px; } .draft .tags { width: 140px; }
+.draft .notes { grid-column: 2; border: 0; background: transparent; outline: none; font-size: 12px; color: var(--muted); resize: vertical; min-height: 18px; padding: 0; }
+.draft .notes::placeholder, .draft .fields input::placeholder { color: var(--muted); opacity: 1; }
+.bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.bar .n { font-size: 12px; color: var(--muted); }
+.btn { display: inline-flex; align-items: center; height: 32px; border: 0; border-radius: var(--r-pill); padding: 0 14px; font-size: 15px; cursor: pointer; background: var(--pill); color: var(--ink); }
+.btn:hover { background: var(--rule-strong); }
+.btn:disabled { background: var(--pill); color: var(--faint); cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.applied { margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.applied li { list-style: none; padding: 4px 10px; border-radius: var(--r-well); background: var(--well); color: var(--body); }
+.applied li.bad { background: var(--bad-bg); color: var(--bad-tx); }
+.done-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
 `;
 const appliedNotes = new Map<number, HTMLElement>();
 let added = new Set<number>();
@@ -1217,7 +1326,7 @@ function renderDrafts(m: ChatMessage): Node {
       $<HTMLInputElement>("input[type=checkbox]", card).onchange = (e) => card.classList.toggle("off", !(e.target as HTMLInputElement).checked);
       list.appendChild(card);
     }
-    const bar = el(`<div class="bar"><span class="n">${r.drafts.length} 项，可以先改再加入${r.rejected ? `（${r.rejected} 项无法识别）` : ""}</span><button class="btn primary">加入清单</button></div>`);
+    const bar = el(`<div class="bar"><span class="n">${r.drafts.length} 项，可以先改再加入${r.rejected ? `（${r.rejected} 项无法识别）` : ""}</span><button type="button" class="btn">加入清单</button></div>`);
     $<HTMLButtonElement>("button", bar).onclick = async (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       const drafts = [...list.querySelectorAll<HTMLElement>(".draft")].map(readDraft).filter((d): d is Draft => !!d);
@@ -1258,7 +1367,7 @@ const loadWidget = (): Promise<void> => {
 };
 let chatWidget: ChatWidget | null = null;
 async function mountChat() {
-  try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sub ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
+  try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sp-hint ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
   // A detail opened from ?todo= before the renderer arrived shows plain paragraphs; render it again now.
   if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
   chatWidget?.destroy();
@@ -1292,10 +1401,19 @@ async function mountChat() {
   });
 }
 // ---- drawers (narrow screens)
-function closeDrawers() { els.rail.classList.remove("open"); els.side.classList.remove("open"); if (els.detail.hidden) els.scrim.hidden = true; }
-$("#ai-toggle").onclick = () => { els.rail.classList.add("open"); els.scrim.hidden = false; };
+/** The left column below 960 px and the AI column below 1200 px are drawers: classes on body (ai-space docs/ui-kit.md). */
+function openDrawer(cls: "sp-open-nav" | "sp-open-aside") {
+  document.body.classList.remove("sp-open-nav", "sp-open-aside");
+  document.body.classList.add(cls, "sp-sheet-open");
+}
+function closeDrawers() { document.body.classList.remove("sp-open-nav", "sp-open-aside", "sp-sheet-open"); }
+$("#ai-toggle").onclick = () => openDrawer("sp-open-aside");
+$("#m-ai").onclick = () => openDrawer("sp-open-aside");
+$("#side-close").onclick = closeDrawers;
+for (const q of ["(min-width: 1200px)", "(min-width: 960px)"]) matchMedia(q).addEventListener("change", (e) => { if (e.matches) closeDrawers(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("sp-sheet-open") && els.detail.hidden && !document.querySelector("dialog[open]")) closeDrawers(); });
 $("#ai-close").onclick = closeDrawers;
-$("#menu").onclick = () => { els.side.classList.add("open"); els.scrim.hidden = false; };
+$("#menu").onclick = () => openDrawer("sp-open-nav");
 
 // ---- machines
 /** This machine and the peers running ai-todo (a hub has them), each with its open count. */
@@ -1316,10 +1434,11 @@ async function loadMachines() {
 function renderMachines() {
   const nav = $("#machines");
   const many = machines.length > 1;
-  nav.hidden = !many; $("#m-label").hidden = !many;
-  $("#machine").textContent = many ? ` · ${machineName()}` : "";
+  $("#m-group").hidden = !many;
+  $("#machine").textContent = many ? machineName() : "";
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
-  nav.innerHTML = `<button class="view${allMode() ? " on" : ""}" data-machine="${ALL}">${svg("layers")}<span>全部机器</span><b>${total || ""}</b></button>` + machines.map((x) => `<button class="view${x.via === via ? " on" : ""}" data-machine="${esc(x.via)}" title="${esc(x.error ?? "")}">${svg("chart")}<span>${esc(x.name)}${x.via ? "" : "（本机）"}</span><b${x.error ? ' class="alert"' : ""}>${x.error ? "!" : x.active ? String(x.active) : ""}</b></button>`).join("");
+  // A machine that did not answer keeps its row, with a red dot and the reason in the title.
+  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">全部机器</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? `读取失败：${x.error}` : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : "（本机）"}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>失败` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
 }
 $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
@@ -1328,7 +1447,7 @@ $("#machines").addEventListener("click", (e) => {
   detailVia = "";
   try { if (via) localStorage.setItem("todo-machine", via); else localStorage.removeItem("todo-machine"); } catch { /* private mode */ }
   liveAbort?.abort();
-  cur = null; els.detail.hidden = true; els.scrim.hidden = true;
+  cur = null; showDetailEl(false);
   filterTag = null; filterProject = null; query = ""; ($("#search") as HTMLInputElement).value = "";
   syncUrl();
   renderMachines();
