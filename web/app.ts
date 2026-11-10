@@ -1366,13 +1366,29 @@ const loadWidget = (): Promise<void> => {
   return widgetLoaded;
 };
 let chatWidget: ChatWidget | null = null;
+/** Bumped by every mountChat; a call overtaken while the widget script loads leaves the panel to the newer one. */
+let chatMounts = 0;
+/** The widget attaches a shadow root to its host, and a host takes only one for good: every mount gets a fresh element. */
+function freshChatHost(): HTMLElement {
+  const host = els.chat.cloneNode(false) as HTMLElement;
+  host.removeAttribute("data-theme");
+  els.chat.replaceWith(host);
+  els.chat = host;
+  return host;
+}
 async function mountChat() {
-  try { await loadWidget(); } catch { els.chat.innerHTML = `<div class="sp-hint ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`; return; }
+  const n = ++chatMounts;
+  try { await loadWidget(); } catch {
+    if (n !== chatMounts) return;
+    chatWidget?.destroy(); chatWidget = null;
+    freshChatHost().innerHTML = `<div class="sp-hint ai-off">AI 组件没有加载（ai-space 不可达）。清单本身照常可用。</div>`;
+    return;
+  }
+  if (n !== chatMounts) return;
   // A detail opened from ?todo= before the renderer arrived shows plain paragraphs; render it again now.
   if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
-  chatWidget?.destroy();
-  els.chat.innerHTML = "";
-  chatWidget = SpaceChat!.mount(els.chat, {
+  chatWidget?.destroy(); chatWidget = null;
+  chatWidget = SpaceChat!.mount(freshChatHost(), {
     // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each
     // (全部机器: this machine's).
     scope: chatVia() ? `todo-${chatVia()}` : "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
