@@ -27,6 +27,9 @@ body.modal-open { overflow:hidden }
 
 /* ---- left column */
 .sp-logo .ic { width:18px;height:18px;stroke-width:2 }
+/* the app's own icon (icon.png, the manifest's icon) instead of the kit's ink tile; the picture has its own rounded square */
+.sp-logo-img { background:none;overflow:hidden }
+.sp-logo-img img { display:block;width:100%;height:100%;object-fit:cover }
 .sp-brand-sub span:empty { display:none }
 .sp-nitem .nl,.sp-nitem > span:first-child { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
 .sp-nc { display:inline-flex;align-items:center;gap:5px;flex:none }
