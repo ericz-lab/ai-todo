@@ -146,6 +146,7 @@ button { cursor: pointer; }
 .todo .line { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo .line:empty { display: none; }
 .todo .line .late { color: var(--danger); }
+.todo .line .mach { color: var(--text); font-weight: 600; }
 .todo .c-due, .todo .c-pri, .todo .c-proj { font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo .c-proj { color: var(--muted); }
 .todo .dash { color: var(--faint); }

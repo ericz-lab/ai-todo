@@ -9,7 +9,7 @@
 type Status = "open" | "doing" | "review" | "deferred" | "done" | "dropped";
 type Todo = { id: number; title: string; notes: string; plan: string; planVersion: number; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
 /** A row of the list (`GET /api/todos?fields=list`): no plan, the notes cut to an excerpt; the detail has the rest. */
-type Item = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string };
+type Item = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string; m?: string };
 type Counts = { active: number; review: number; deferred: number; done: number };
 type ListAnswer = { todos: Item[]; tags: { tag: string; n: number }[]; projects: { project: string; n: number }[]; counts: Counts; total?: number; nextBefore?: string | null };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
@@ -47,14 +47,24 @@ const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? Sp
  */
 type Machine = { via: string; name: string; active: number | null; error: string | null };
 let machines: Machine[] = [];
+/** `via` for 全部机器: every machine's list on one page, each row with its machine. */
+const ALL = "*";
 /** `?m=` first, else the machine picked last in this browser. */
 let via = new URLSearchParams(location.search).get("m") ?? (() => { try { return localStorage.getItem("todo-machine") ?? ""; } catch { return ""; } })();
-/** A page route on the machine shown: the API and the record pictures; the chat stays on this machine. */
-const on = (path: string): string => (via && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(via)}${path}` : path);
-const machineName = () => machines.find((m) => m.via === via)?.name ?? via;
+const allMode = () => via === ALL;
+/** In the all-machines view, the machine of the todo opened from the list: the detail's routes go there. */
+let detailVia = "";
+/** The machine a page route goes to: the one shown, or in the all-machines view the opened todo's. */
+const at = () => (allMode() ? detailVia : via);
+/** The AI panel's machine: the one shown; in the all-machines view this one. */
+const chatVia = () => (allMode() ? "" : via);
+/** A page route on a machine (the one shown by default): the API and the record pictures; the chat stays on this machine. */
+const on = (path: string, m = at()): string => (m && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(m)}${path}` : path);
+const nameOf = (m: string) => machines.find((x) => x.via === m)?.name ?? m;
+const machineName = () => (allMode() ? "全部机器" : nameOf(via));
 
-const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-  const r = await fetch(on(path), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
+const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T> => {
+  const r = await fetch(on(path, m), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
   const body = (await r.json()) as T & { ok?: boolean; error?: string };
   if (!r.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body;
@@ -117,6 +127,7 @@ const ICON = {
   search: `<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>`,
   spark: `<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9Z"/>`,
   chart: `<path d="M4 4v16h16"/><path d="m7.5 14 3.5-4 3 3 5-6"/>`,
+  layers: `<path d="m12 4 8.5 4.5L12 13 3.5 8.5Z"/><path d="m3.5 12.5 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/>`,
 };
 const svg = (name: keyof typeof ICON) => `<svg class="ic" viewBox="0 0 24 24">${ICON[name]}</svg>`;
 let savedTheme: string | null = null;
@@ -133,7 +144,8 @@ const viewParam = new URLSearchParams(location.search).get("view") as View | nul
 let view: View = viewParam && VIEWS.includes(viewParam) ? viewParam : "all";
 /** The done list comes a page at a time, newest finished first. */
 const DONE_PAGE = 50;
-let doneCursor: string | null = null;
+/** The next done page's cursor per machine that has more. */
+let doneCursors = new Map<string, string>();
 let doneTotal = 0;
 let counts: Counts | null = null;
 let filterTag: string | null = null;
@@ -159,39 +171,72 @@ const listQuery = (extra: Record<string, string> = {}) => {
   if (view === "done") q.set("limit", String(DONE_PAGE));
   return q;
 };
+/** A todo's key on the page: ids are per machine, so the all-machines view adds the machine. */
+const keyOf = (id: number, m?: string) => `${m ?? ""}#${id}`;
+/** In the all-machines view, each row carries its machine. */
+const tagged = (xs: Item[], m: string): Item[] => (allMode() ? xs.map((t) => ({ ...t, m })) : xs);
+/** The all-machines done list: newest finished first across machines. */
+const byDone = (a: Item, b: Item) => (b.doneAt ?? "").localeCompare(a.doneAt ?? "");
+/** Sums of the same key over several machines' lists (projects, tags), largest first. */
+const sumBy = <K extends string>(lists: ({ n: number } & Record<K, string>)[][], k: K) => {
+  const n = new Map<string, number>();
+  for (const l of lists) for (const x of l) n.set(x[k], (n.get(x[k]) ?? 0) + x.n);
+  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([key, v]) => ({ [k]: key, n: v }) as { n: number } & Record<K, string>);
+};
 async function load() {
   const seq = ++loadSeq;
   const status = statusOf(view);
   const plain = status === "active" && !filterTag && !filterProject && !query;
   // The list, the unfiltered active list (sidebar and cards) and the week's trend in parallel: one round trip, not two.
-  const [r, a, w] = await Promise.all([
-    api<ListAnswer>(`/api/todos?${listQuery()}`),
-    plain ? null : api<ListAnswer>("/api/todos?status=active&fields=list"),
-    api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget")
+  const from = (m: string) => Promise.all([
+    api<ListAnswer>(`/api/todos?${listQuery()}`, {}, m),
+    plain ? null : api<ListAnswer>("/api/todos?status=active&fields=list", {}, m),
+    api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget", {}, m)
       .then((x) => x.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null),
   ]);
+  // 全部机器 asks every machine at once; one that does not answer is named, the others still show.
+  const parts = allMode()
+    ? await Promise.all(machines.map((x) => from(x.via).then((p) => ({ m: x.via, p }), () => ({ m: x.via, p: null }))))
+    : [{ m: via, p: await from(via) }];
   if (seq !== loadSeq) return;
-  todos = r.todos; tags = r.tags; projects = r.projects; counts = r.counts;
-  active = a ? a.todos : todos;
-  doneCursor = r.nextBefore ?? null; doneTotal = r.total ?? todos.length;
-  trend = w;
+  const failed = parts.filter((x) => !x.p).map((x) => nameOf(x.m));
+  if (failed.length) toast(`读取失败：${failed.join("、")}`);
+  const ok = parts.flatMap((x) => (x.p ? [{ m: x.m, r: x.p[0], a: x.p[1], w: x.p[2] }] : []));
+  todos = ok.flatMap((x) => tagged(x.r.todos, x.m));
+  if (allMode() && view === "done") todos.sort(byDone);
+  active = ok.flatMap((x) => tagged((x.a ?? x.r).todos, x.m));
+  tags = sumBy(ok.map((x) => x.r.tags), "tag"); projects = sumBy(ok.map((x) => x.r.projects), "project");
+  counts = ok.length ? ok.reduce((s, x) => ({ active: s.active + x.r.counts.active, review: s.review + x.r.counts.review, deferred: s.deferred + x.r.counts.deferred, done: s.done + x.r.counts.done }), { active: 0, review: 0, deferred: 0, done: 0 }) : null;
+  doneCursors = new Map(ok.flatMap((x) => (x.r.nextBefore ? [[x.m, x.r.nextBefore] as const] : [])));
+  doneTotal = ok.reduce((s, x) => s + (x.r.total ?? x.r.todos.length), 0);
+  // The week's completions, day by day, added up over the machines that answered it.
+  const ws = ok.flatMap((x) => (x.w ? [x.w] : []));
+  if (ws.length <= 1) trend = ws[0] ?? null;
+  else {
+    const days = new Map<string, number>();
+    for (const w of ws) for (const p of w) days.set(p.t, (days.get(p.t) ?? 0) + (p.v ?? 0));
+    trend = [...days].sort((a, b) => a[0].localeCompare(b[0])).slice(-7).map(([t, v]) => ({ t, v }));
+  }
   renderSide();
   renderHead();
   renderKpis();
   renderTrend();
   renderList();
 }
-/** The next page of the done list, appended. */
+/** The next page of the done list (of every machine that has more), appended. */
 async function loadMore(btn: HTMLButtonElement) {
-  if (!doneCursor || view !== "done") return;
+  if (!doneCursors.size || view !== "done") return;
   const seq = loadSeq;
   btn.disabled = true; btn.textContent = "加载中…";
   try {
-    const r = await api<ListAnswer>(`/api/todos?${listQuery({ before: doneCursor })}`);
+    const pages = await Promise.all([...doneCursors].map(([m, before]) => api<ListAnswer>(`/api/todos?${listQuery({ before })}`, {}, m).then((r) => ({ m, r }))));
     if (seq !== loadSeq) return;
-    const seen = new Set(todos.map((t) => t.id));
-    todos = [...todos, ...r.todos.filter((t) => !seen.has(t.id))];
-    doneCursor = r.nextBefore ?? null; doneTotal = r.total ?? doneTotal;
+    const seen = new Set(todos.map((t) => keyOf(t.id, t.m)));
+    for (const { m, r } of pages) {
+      todos = [...todos, ...tagged(r.todos, m).filter((t) => !seen.has(keyOf(t.id, t.m)))];
+      if (r.nextBefore) doneCursors.set(m, r.nextBefore); else doneCursors.delete(m);
+    }
+    if (allMode()) todos.sort(byDone);
     renderList();
   } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = "加载更多"; }
 }
@@ -317,16 +362,17 @@ function renderTrend() {
 // ---- the list
 type Group = { key: string; title: string; late?: boolean; items: Item[] };
 /** Subtasks by parent id, among the todos listed; a subtask whose parent is listed is drawn under it, not on its own. */
-let kids = new Map<number, Item[]>();
+let kids = new Map<string, Item[]>();
 function nest() {
   const shown = visible();
-  const ids = new Set(shown.map((t) => t.id));
+  const ids = new Set(shown.map((t) => keyOf(t.id, t.m)));
+  const parentKey = (t: Item) => (t.parentId ? keyOf(t.parentId, t.m) : "");
   kids = new Map();
-  for (const t of shown) if (t.parentId && ids.has(t.parentId)) kids.set(t.parentId, [...(kids.get(t.parentId) ?? []), t]);
-  return shown.filter((t) => !t.parentId || !ids.has(t.parentId));
+  for (const t of shown) if (t.parentId && ids.has(parentKey(t))) kids.set(parentKey(t), [...(kids.get(parentKey(t)) ?? []), t]);
+  return shown.filter((t) => !t.parentId || !ids.has(parentKey(t)));
 }
-/** A todo's title by id, from whatever the page has; for the "↳ parent" line. */
-const titleOf = (id: number) => (todos.find((t) => t.id === id) ?? active.find((t) => t.id === id))?.title;
+/** A todo's title by id (on the same machine), from whatever the page has; for the "↳ parent" line. */
+const titleOf = (id: number, m?: string) => (todos.find((t) => t.id === id && t.m === m) ?? active.find((t) => t.id === id && t.m === m))?.title;
 function groups(): Group[] {
   const today = todayStr(), tomorrow = addDays(1), week = addDays(7);
   const tops = nest();
@@ -352,30 +398,34 @@ function renderList() {
     els.list.innerHTML = `<div class="empty"><b>${query ? "没有结果" : view === "done" || view === "review" ? "空" : "轻松"}</b>${hint}</div>`;
     return;
   }
-  const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(t.id)?.length ?? 0), 0), 0);
-  const foot = view === "done" ? `<div class="list-foot">${doneCursor ? `<button class="btn small" id="load-more">加载更多</button>` : ""}<b>已显示 ${total} / ${doneTotal} 项</b></div>`
+  const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(keyOf(t.id, t.m))?.length ?? 0), 0), 0);
+  const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button class="btn small" id="load-more">加载更多</button>` : ""}<b>已显示 ${total} / ${doneTotal} 项</b></div>`
     : view === "deferred" || view === "review" ? `<div class="list-foot"><b>共 ${total} 项</b></div>`
     : `<div class="list-foot"><span class="legend" style="--c:var(--danger)">已过期，先处理或改日期</span><span class="legend" style="--c:var(--bar)">今天到期</span><b>共 ${total} 项</b></div>`;
   els.list.innerHTML = gs.map((g, i) => `
     <section class="group">
       <div class="cols${g.late ? " late" : ""}"><div class="gname">${g.title}<b>${g.items.length}</b></div><span>截止</span><span>优先级</span><span class="c-proj-h">项目</span><span></span></div>
       <div class="group-name${g.late ? " late" : ""}">${g.title}<b>${g.items.length}</b></div>
-      ${g.items.map((t) => rowHtml(t) + (kids.get(t.id) ?? []).map((k) => rowHtml(k, true)).join("")).join("")}
+      ${g.items.map((t) => rowHtml(t) + (kids.get(keyOf(t.id, t.m)) ?? []).map((k) => rowHtml(k, true)).join("")).join("")}
       ${i === gs.length - 1 ? foot : ""}
     </section>`).join("");
   els.list.querySelectorAll<HTMLElement>(".todo").forEach((row) => {
     const id = Number(row.dataset.id);
-    row.onclick = (e) => { if ((e.target as HTMLElement).closest("button, label, input")) return; void openDetail(id); };
-    row.onkeydown = (e) => { if (e.key === "Enter" && e.target === row) void openDetail(id); };
+    // In the all-machines view, what a row does goes to that row's machine.
+    const pick = () => { if (allMode()) detailVia = row.dataset.m ?? ""; };
+    const open = (execute = false) => { pick(); return openDetail(id, execute); };
+    row.onclick = (e) => { if ((e.target as HTMLElement).closest("button, label, input")) return; void open(); };
+    row.onkeydown = (e) => { if (e.key === "Enter" && e.target === row) void open(); };
     const inReview = row.classList.contains("review");
     $<HTMLInputElement>("input[type=checkbox]", row).onchange = (e) => {
       const on = (e.target as HTMLInputElement).checked;
+      pick();
       void (inReview && on ? verdict(id, "accept") : setStatus(id, on ? "done" : "open"));
     };
-    row.querySelector<HTMLElement>("[data-op=run]")?.addEventListener("click", () => void openDetail(id, true));
-    row.querySelector<HTMLElement>("[data-op=edit]")?.addEventListener("click", () => void openDetail(id));
-    row.querySelector<HTMLElement>("[data-op=accept]")?.addEventListener("click", () => void verdict(id, "accept"));
-    row.querySelector<HTMLElement>("[data-op=reject]")?.addEventListener("click", () => void openDetail(id).then(() => openReject()));
+    row.querySelector<HTMLElement>("[data-op=run]")?.addEventListener("click", () => void open(true));
+    row.querySelector<HTMLElement>("[data-op=edit]")?.addEventListener("click", () => void open());
+    row.querySelector<HTMLElement>("[data-op=accept]")?.addEventListener("click", () => { pick(); void verdict(id, "accept"); });
+    row.querySelector<HTMLElement>("[data-op=reject]")?.addEventListener("click", () => void open().then(() => openReject()));
   });
   const more = els.list.querySelector<HTMLButtonElement>("#load-more");
   if (more) more.onclick = () => void loadMore(more);
@@ -383,10 +433,11 @@ function renderList() {
 function rowHtml(t: Item, nested = false): string {
   const line: string[] = [];
   const open = t.status !== "done" && t.status !== "deferred" && t.status !== "review";
+  if (t.m !== undefined) line.push(`<span class="mach">${esc(nameOf(t.m))}</span>`);
   if (t.status === "doing") line.push(`<span style="color:var(--ai)">进行中</span>`);
   if (t.status === "review") line.push(`<span style="color:var(--warn)">待验收</span>`);
   if (t.subtasks.total) line.push(`子任务 ${t.subtasks.done}/${t.subtasks.total}`);
-  if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId) ?? `#${t.parentId}`)}`);
+  if (t.parentId && !nested) line.push(`↳ ${esc(titleOf(t.parentId, t.m) ?? `#${t.parentId}`)}`);
   if (t.tags.length) line.push(t.tags.map((tag) => `#${esc(tag)}`).join(" "));
   if (t.status === "done" && t.doneAt) line.push(`完成于 ${esc(fmtAgo(t.doneAt))}`);
   if (t.notesExcerpt) line.push(esc(t.notesExcerpt.slice(0, 80)));
@@ -394,7 +445,7 @@ function rowHtml(t: Item, nested = false): string {
   const due = !t.due ? `<span class="dash">—</span>`
     : `<span class="pill${late ? " late" : open && dayOf(t.due) === todayStr() ? " today" : ""}">${esc(fmtDue(t.due))}</span>`;
   const pri = t.priority ? `<span class="pri p${t.priority}"><span>${PRI[t.priority]}</span></span>` : `<span class="dash">—</span>`;
-  return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}" tabindex="0">
+  return `<div class="todo ${t.status}${nested ? " sub" : ""}" data-id="${t.id}"${t.m !== undefined ? ` data-m="${esc(t.m)}"` : ""} tabindex="0">
     <label class="check"><input type="checkbox"${t.status === "done" ? " checked" : ""} aria-label="完成 ${esc(t.title)}"><span></span></label>
     <div class="t"><span class="title">${esc(t.title)}</span><span class="line">${line.join(" · ")}</span></div>
     <div class="c-due">${due}</div>
@@ -449,7 +500,8 @@ async function openDetail(id: number, execute = false) {
   d.recordContent.value = recordDrafts.get(id) ?? "";
   renderRecordImages();
   els.detail.hidden = false; els.scrim.hidden = false;
-  history.replaceState(null, "", `?todo=${id}`);
+  // In the all-machines view the address names the todo's machine too (`at`), so a reload opens the same one.
+  history.replaceState(null, "", allMode() ? `?${new URLSearchParams({ m: ALL, ...(detailVia ? { at: detailVia } : {}), todo: String(id) })}` : `?todo=${id}`);
   const running = r.runs.find((x) => x.status === "running");
   if (running) followRun(`/api/runs/${running.id}/stream`, {});
   else if (execute) void runExecute();
@@ -1003,7 +1055,7 @@ function followRun(url: string, init: RequestInit) {
     const paint = () => { if (!frame && card) frame = requestAnimationFrame(() => { frame = 0; $(".md", card!).innerHTML = renderMd(text); }); };
     try {
       let events: AsyncIterable<{ event: string; data: string }>;
-      if (via) events = pollRun(url, init, ac.signal);
+      if (at()) events = pollRun(url, init, ac.signal);
       else {
         const res = await fetch(url, { ...init, headers: { "content-type": "application/json" }, signal: ac.signal });
         if (!res.ok || !res.headers.get("content-type")?.includes("text/event-stream")) {
@@ -1111,7 +1163,7 @@ function renderDrafts(m: ChatMessage): Node {
   const wrap = el(`<div><style>${INNER_CSS}</style><div class="text">${renderMd(m.content.replace(FENCE_RE, "").trim())}</div><div class="drafts"></div></div>`);
   const list = $(".drafts", wrap);
   if (added.has(m.id)) { list.replaceWith(el(`<div class="done-note">这些任务已经加入清单。</div>`)); return wrap; }
-  void api<{ drafts: Draft[]; rejected: number }>("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: m.content }) }).then((r) => {
+  void api<{ drafts: Draft[]; rejected: number }>("/api/ai/drafts", { method: "POST", body: JSON.stringify({ text: m.content }) }, chatVia()).then((r) => {
     if (!r.drafts.length) { list.replaceWith(el(`<div class="done-note">没有可用的任务草稿。</div>`)); return; }
     for (const d of r.drafts) {
       const card = draftCard(d);
@@ -1127,7 +1179,7 @@ function renderDrafts(m: ChatMessage): Node {
       if (!drafts.length) { toast("没有选中的任务"); return; }
       btn.disabled = true;
       try {
-        await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) });
+        await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) }, chatVia());
         rememberAdded(m.id);
         list.replaceWith(el(`<div class="done-note">已加入 ${drafts.length} 项。</div>`));
         toast(`已加入 ${drafts.length} 项`);
@@ -1167,11 +1219,12 @@ async function mountChat() {
   chatWidget?.destroy();
   els.chat.innerHTML = "";
   chatWidget = SpaceChat!.mount(els.chat, {
-    // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each.
-    scope: via ? `todo-${via}` : "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
-    context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`),
+    // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each
+    // (全部机器: this machine's).
+    scope: chatVia() ? `todo-${chatVia()}` : "todo", theme: "auto", lang: "zh", attachments: true, timeoutMs: 300_000,
+    context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}`, {}, chatVia()),
     placeholder: "写下要做的事，或者「把明天的都推到周五」「今天先做什么」…",
-    emptyText: "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
+    emptyText: (allMode() ? `全部机器视图下，AI 只看和改本机（${nameOf("")}）的清单；要管别的机器，先在左侧选中它。` : "") + "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
     presets: [
       { label: "今日计划", prompt: "根据截止时间和优先级，给我今天的执行顺序，简短。", send: true },
       { label: "整理优先级", prompt: "看一遍清单，把明显紧急或重要的调整优先级，并说明理由。", send: true },
@@ -1182,7 +1235,7 @@ async function mountChat() {
     onReply: async (m) => {
       if (!hasBlock(m.content, "actions")) return;
       try {
-        const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) });
+        const r = await api<{ results: { op: string; id?: number; ok: boolean; error?: string; todo?: Todo | null }[]; rejected: number }>("/api/ai/apply", { method: "POST", body: JSON.stringify({ text: m.content, source: "chat" }) }, chatVia());
         const ul = appliedNotes.get(m.id);
         const opName: Record<string, string> = { review: "提交验收", accept: "验收通过", reject: "退回", add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? "失败")}`}</li>`).join("") + (r.rejected ? `<li class="bad">${r.rejected} 项无法识别</li>` : "");
@@ -1212,7 +1265,7 @@ async function loadMachines() {
       return { via: v, name: v || m.local || "本机", active: r.ok ? b.counts.active : null, error: r.ok ? null : b.error ?? `HTTP ${r.status}` };
     } catch (e) { return { via: v, name: v || m.local || "本机", active: null, error: (e as Error).message }; }
   }));
-  if (!machines.some((x) => x.via === via)) { via = ""; syncUrl(); }
+  if (allMode() ? machines.length < 2 : !machines.some((x) => x.via === via)) { via = ""; syncUrl(); }
   renderMachines();
 }
 function renderMachines() {
@@ -1220,12 +1273,14 @@ function renderMachines() {
   const many = machines.length > 1;
   nav.hidden = !many; $("#m-label").hidden = !many;
   $("#machine").textContent = many ? ` · ${machineName()}` : "";
-  nav.innerHTML = machines.map((x) => `<button class="view${x.via === via ? " on" : ""}" data-machine="${esc(x.via)}" title="${esc(x.error ?? "")}">${svg("chart")}<span>${esc(x.name)}${x.via ? "" : "（本机）"}</span><b${x.error ? ' class="alert"' : ""}>${x.error ? "!" : x.active ? String(x.active) : ""}</b></button>`).join("");
+  const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
+  nav.innerHTML = `<button class="view${allMode() ? " on" : ""}" data-machine="${ALL}">${svg("layers")}<span>全部机器</span><b>${total || ""}</b></button>` + machines.map((x) => `<button class="view${x.via === via ? " on" : ""}" data-machine="${esc(x.via)}" title="${esc(x.error ?? "")}">${svg("chart")}<span>${esc(x.name)}${x.via ? "" : "（本机）"}</span><b${x.error ? ' class="alert"' : ""}>${x.error ? "!" : x.active ? String(x.active) : ""}</b></button>`).join("");
 }
 $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
   if (!b || b.dataset.machine === via) return;
   via = b.dataset.machine ?? "";
+  detailVia = "";
   try { if (via) localStorage.setItem("todo-machine", via); else localStorage.removeItem("todo-machine"); } catch { /* private mode */ }
   liveAbort?.abort();
   cur = null; els.detail.hidden = true; els.scrim.hidden = true;
@@ -1242,6 +1297,9 @@ $("#machines").addEventListener("click", (e) => {
   await loadMachines();
   await load();
   void mountChat();
-  const wanted = Number(new URLSearchParams(location.search).get("todo"));
+  const params = new URLSearchParams(location.search);
+  const wanted = Number(params.get("todo"));
+  const wantedAt = params.get("at") ?? "";
+  if (allMode() && machines.some((x) => x.via === wantedAt)) detailVia = wantedAt;
   if (wanted) await openDetail(wanted);
 })();
