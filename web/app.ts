@@ -86,7 +86,6 @@ const chatVia = () => (allMode() ? "" : via);
 /** A page route on a machine (the one shown by default): the API and the record pictures; the chat stays on this machine. */
 const on = (path: string, m = at()): string => (m && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(m)}${path}` : path);
 const nameOf = (m: string) => machines.find((x) => x.via === m)?.name ?? m;
-const machineName = () => (allMode() ? L("全部机器", "All machines") : nameOf(via));
 
 const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T> => {
   const r = await fetch(on(path, m), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
@@ -1504,7 +1503,6 @@ function renderMachines() {
   const nav = $("#machines");
   const many = machines.length > 1;
   $("#m-group").hidden = !many;
-  $("#machine").textContent = many ? machineName() : "";
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
   // A machine that did not answer keeps its row, with a red dot and the reason in the title.
   nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
