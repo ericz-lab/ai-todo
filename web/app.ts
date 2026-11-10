@@ -81,8 +81,12 @@ const allMode = () => via === ALL;
 let detailVia = "";
 /** The machine a page route goes to: the one shown, or in the all-machines view the opened todo's. */
 const at = () => (allMode() ? detailVia : via);
-/** The AI panel's machine: the one shown; in the all-machines view this one. */
-const chatVia = () => (allMode() ? "" : via);
+/** The machine picked in the AI panel's own menu for this browser; null = follow the list on the left. */
+let aiVia: string | null = (() => { try { const v = localStorage.getItem("todo-ai-machine"); return v?.startsWith("m:") ? v.slice(2) : null; } catch { return null; } })();
+/** Whether the AI panel keeps its own machine (one that is still listed) instead of following the list. */
+const aiPinned = () => aiVia !== null && machines.some((x) => x.via === aiVia);
+/** The AI panel's machine: the one picked in its menu; else the one shown, and in the all-machines view this one. */
+const chatVia = () => (aiPinned() ? aiVia! : allMode() ? "" : via);
 /** A page route on a machine (the one shown by default): the API and the record pictures; the chat stays on this machine. */
 const on = (path: string, m = at()): string => (m && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(m)}${path}` : path);
 const nameOf = (m: string) => machines.find((x) => x.via === m)?.name ?? m;
@@ -1392,7 +1396,7 @@ function renderDrafts(m: ChatMessage): Node {
         await api("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, source: "ai" }) }, chatVia());
         rememberAdded(m.id);
         list.replaceWith(el(`<div class="done-note">${L(`已加入 ${drafts.length} 项。`, `Added ${drafts.length}.`)}</div>`));
-        toast(L(`已加入 ${drafts.length} 项`, `Added ${drafts.length}`));
+        toast(L(`已加入 ${drafts.length} 项`, `Added ${drafts.length}`) + aiElsewhere());
         await load();
       } catch (err) { btn.disabled = false; toast((err as Error).message); }
     };
@@ -1421,6 +1425,8 @@ const loadWidget = (): Promise<void> => {
   });
   return widgetLoaded;
 };
+/** For a toast: the machine the AI acted on, when the list shown is another one's. */
+const aiElsewhere = () => (!allMode() && chatVia() === via ? "" : L(`（${nameOf(chatVia())}）`, ` (${nameOf(chatVia())})`));
 let chatWidget: ChatWidget | null = null;
 /** Bumped by every mountChat; a call overtaken while the widget script loads leaves the panel to the newer one. */
 let chatMounts = 0;
@@ -1445,15 +1451,15 @@ async function mountChat() {
   if (cur) { if (!d.notesView.hidden) showNotes("view"); if (plan.mode === "view") showPlan("view"); }
   chatWidget?.destroy(); chatWidget = null;
   chatWidget = SpaceChat!.mount(freshChatHost(), {
-    // The chat runs on this machine; its context and its actions go to the machine shown, one conversation each
-    // (全部机器: this machine's).
+    // The chat runs on this machine; its context and its actions go to the AI panel's machine (its own menu, else
+    // the machine shown; 全部机器: this machine's), one conversation each.
     scope: chatVia() ? `todo-${chatVia()}` : "todo", theme: "auto", lang: EN ? "en" : "zh", attachments: true, timeoutMs: 300_000,
     context: async () => api<ChatContext & { tools?: string[]; model?: string }>(`/api/ai/context?timezone=${encodeURIComponent(TZ)}&lang=${EN ? "en" : "zh"}`, {}, chatVia()),
     placeholder: L("写下要做的事，或者「把明天的都推到周五」「今天先做什么」…", "Write what to do, or “move tomorrow's to Friday”, “what first today?”…"),
     emptyText: EN
-      ? (allMode() ? `In the all-machines view the AI reads and changes this machine's list only (${nameOf("")}); pick another machine on the left to manage it. ` : "")
+      ? (aiPinned() ? `The AI reads and changes the list of ${nameOf(chatVia())}, whichever machine is shown on the left. ` : allMode() ? `In the all-machines view the AI reads and changes this machine's list only (${nameOf("")}); pick another machine in the menu above to manage it. ` : "")
         + "One entry, three uses: write “send the weekly report by 3 pm tomorrow, book flights Friday #travel” and it drafts tasks for you to confirm; say “split the year-end review into three steps” or “3 is done” and it changes the list; ask “what first today?” and it orders by due date and priority. You can also paste, drop or attach screenshots and photos with ＋."
-      : (allMode() ? `全部机器视图下，AI 只看和改本机（${nameOf("")}）的清单；要管别的机器，先在左侧选中它。` : "") + "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
+      : (aiPinned() ? `AI 看和改的是 ${nameOf(chatVia())} 的清单，和左侧显示哪台机器无关。` : allMode() ? `全部机器视图下，AI 只看和改本机（${nameOf("")}）的清单；要管别的机器，在上方的菜单里选它。` : "") + "一个入口，三种用法：写「明天下午三点前发周报，周五订机票 #出差」，它拆成任务让你确认；说「把年终总结拆成三步」「3 完成了」，它直接改清单；问「今天先做什么」，它按截止和优先级排。也可以粘贴、拖入或用 ＋ 附上截图和照片。",
     presets: EN ? [
       { label: "Today's plan", prompt: "From the due dates and priorities, give me today's order, briefly.", send: true },
       { label: "Sort priorities", prompt: "Go over the list, raise or lower the priority of what is clearly urgent or important, and say why.", send: true },
@@ -1476,7 +1482,7 @@ async function mountChat() {
           : { review: "提交验收", accept: "验收通过", reject: "退回", add: "新增", update: "修改", done: "完成", start: "开始", defer: "暂不处理", reopen: "重开", record: "追加记录", plan: "改方案", "edit-record": "编辑记录", delete: "删除" };
         if (ul) ul.innerHTML = r.results.map((x) => `<li class="${x.ok ? "" : "bad"}">${opName[x.op] ?? x.op} ${x.todo ? esc(x.todo.title) : x.id ? `#${x.id}` : ""}${x.ok ? "" : ` · ${esc(x.error ?? L("失败", "failed"))}`}</li>`).join("") + (r.rejected ? `<li class="bad">${L(`${r.rejected} 项无法识别`, `${r.rejected} not understood`)}</li>` : "");
         const ok = r.results.filter((x) => x.ok).length;
-        toast(L(`AI 改了清单：${ok}/${r.results.length} 项成功`, `The AI changed the list: ${ok}/${r.results.length} succeeded`));
+        toast(L(`AI 改了清单：${ok}/${r.results.length} 项成功`, `The AI changed the list: ${ok}/${r.results.length} succeeded`) + aiElsewhere());
         await load();
       } catch (e) { toast(L(`清单操作失败：${(e as Error).message}`, `List change failed: ${(e as Error).message}`)); }
     },
@@ -1519,8 +1525,25 @@ function renderMachines() {
   $("#m-group").hidden = !many;
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
   // A machine that did not answer keeps its row, with a red dot and the reason in the title.
+  renderAiMachine();
   nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
 }
+/** The AI panel's machine menu: follow the list, or one machine whatever the list shows. Hidden with one machine. */
+function renderAiMachine() {
+  const sel = $<HTMLSelectElement>("#ai-machine");
+  sel.hidden = machines.length < 2;
+  const followed = allMode() ? "" : via;
+  sel.innerHTML = `<option value="">${esc(L(`跟随左侧（${nameOf(followed)}）`, `Follow the list (${nameOf(followed)})`))}</option>`
+    + machines.map((x) => `<option value="m:${esc(x.via)}">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</option>`).join("");
+  sel.value = aiPinned() ? `m:${aiVia}` : "";
+}
+$<HTMLSelectElement>("#ai-machine").onchange = (e) => {
+  const v = (e.target as HTMLSelectElement).value;
+  const before = chatVia();
+  aiVia = v ? v.slice(2) : null;
+  try { if (v) localStorage.setItem("todo-ai-machine", v); else localStorage.removeItem("todo-ai-machine"); } catch { /* private mode */ }
+  if (chatVia() !== before) void mountChat();
+};
 $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
   if (!b || b.dataset.machine === via) return;
@@ -1534,7 +1557,8 @@ $("#machines").addEventListener("click", (e) => {
   renderMachines();
   closeDrawers();
   void load().catch((err) => toast((err as Error).message));
-  void mountChat();
+  // A panel with its own machine keeps its conversation; one that follows the list moves with it.
+  if (!aiPinned()) void mountChat();
 });
 
 // ---- boot
