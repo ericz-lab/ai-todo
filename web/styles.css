@@ -135,6 +135,9 @@ body.modal-open { overflow:hidden }
 
 /* ---- the AI column: ai-space's chat widget, its tokens mapped to the kit's */
 .sp-aside-head .sp-tt { flex:none }
+/* The AI panel's machine menu sits between the title and the close button, as wide as its text allows. */
+.sp-aside-head .ai-machine { flex:0 1 auto;min-width:0;width:auto;max-width:62%;height:32px;margin-left:auto;padding-top:0;padding-bottom:0;font-size:13px }
+@media (max-width: 759px) { .sp-aside-head .ai-machine { height:40px } }
 .ai-body { flex:1;min-height:0;padding:0 12px 12px;
   --sc-font:var(--font-sans); --sc-font-size:15px; --sc-radius:var(--r-well); --sc-bg:var(--clear);
   --sc-fg:var(--body); --sc-muted:var(--muted); --sc-surface:var(--surface); --sc-surface-strong:var(--hover);
