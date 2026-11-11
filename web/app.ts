@@ -1524,14 +1524,24 @@ function renderActions(m: ChatMessage): Node {
 
 let widgetLoaded: Promise<void> | null = null;
 const loadWidget = (): Promise<void> => {
-  widgetLoaded ??= new Promise<void>((resolve, reject) => {
-    if (typeof SpaceChat !== "undefined") return resolve();
-    const s = document.createElement("script");
-    s.src = "/space/chat/widget.js";
-    s.onload = () => resolve();
-    s.onerror = () => { widgetLoaded = null; reject(new Error("widget not loaded")); };
-    document.head.appendChild(s);
-  });
+  widgetLoaded ??= (async () => {
+    if (typeof SpaceChat !== "undefined") return;
+    // The script's address carries its version: a browser or an edge cache that kept an older copy under the
+    // plain address (seen behind Cloudflare, despite no-cache) would otherwise run it after ai-space was upgraded.
+    // The version is the ETag, asked for under an address no cache has seen; without one, nothing is reused.
+    let v = "";
+    try {
+      const head = await fetch(`/space/chat/widget.js?probe=${Date.now()}`, { method: "HEAD", cache: "no-store" });
+      if (head.ok) v = (head.headers.get("etag") ?? "").replace(/^W\//, "").replace(/[^\w.-]/g, "");
+    } catch { /* the script load below reports an unreachable ai-space */ }
+    await new Promise<void>((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = `/space/chat/widget.js?v=${v || Date.now()}`;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("widget not loaded"));
+      document.head.appendChild(s);
+    });
+  })().catch((e) => { widgetLoaded = null; throw e; });
   return widgetLoaded;
 };
 /** For a toast: the machine the AI acted on, when the list shown is another one's. */
