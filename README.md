@@ -10,7 +10,7 @@ One AI box at the top, three uses:
 - **Change**: "把明天的都推到周五", "3 完成了", "把年终总结拆成三步". The AI edits the list and the answer shows what changed; a split becomes subtasks of the task.
 - **Ask**: "今天先做什么", "这周压着什么". Presets above the box: 今日计划, 整理优先级, 拆分任务, 一周回顾.
 
-On a task, `✦ 执行` (or the button in its detail) hands it to a full-mode agent run through ai-space's model service (`mode: "full"`: the CLI with its native tools and context), on opus by default (`claude/intermediate`; `TODO_EXECUTE_MODEL` picks another `<runtime>/<tier>` or model). It is not a chat: the agent works the task and its report streams in, is kept as a run under the task, and survives closing the page.
+On a task, `✦ 执行` (or the button in its detail) hands it to a full-mode agent run through ai-space's model service (`mode: "full"`: the CLI with its native tools and context), on opus by default (`claude/intermediate`; `TODO_EXECUTE_MODEL` picks another `<runtime>/<tier>` or model). The run has full permission on the machine (`permissionMode: "bypassPermissions"`: the agent writes files and runs commands without asking), since the person handed the task over; `TODO_EXECUTE_PERMISSION` narrows it (`acceptEdits`, `plan`, or `default` for the runtime's read-only headless tier). It is not a chat: the agent works the task and its report streams in, is kept as a run under the task, and survives closing the page.
 
 Views: 今天 (doing, overdue, due today), 即将, 全部, 验收, 暂不处理, 已完成 (50 at a time, newest finished first, **加载更多** for the rest; search runs on the server); filter by project or tag on the left. Click a task for its detail: fields autosave; subtasks, operation records, runs and history are under it.
 

@@ -16,7 +16,7 @@ import { callerAllowed, envelopeOf, forwarder, machineFinder, readEnvelope, type
 import index from "../web/index.html";
 import {
   chatContext, draftsFromAnswer, executeAgentPrompt, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
-  type ModelClient,
+  EXECUTE_PERMISSIONS, type ExecutePermission, type ModelClient,
 } from "./ai.ts";
 import { appZone, config, databasePath } from "./config.ts";
 import {
@@ -40,6 +40,8 @@ export interface ServerOptions {
   executeTimeoutMs?: number;
   /** Model of an execution (a full-mode agent run); claude/intermediate (opus) when unset. */
   executeModel?: string;
+  /** Write tier of an execution (TODO_EXECUTE_PERMISSION); full permission when unset, `default` sends none. */
+  executePermission?: string;
   webTools?: boolean;
   /** A successful execution of an open or doing todo sends it to review (验收); false keeps its status (TODO_AUTO_REVIEW=0). */
   autoReview?: boolean;
@@ -118,6 +120,9 @@ export function createServer(opts: ServerOptions) {
   const defaultTz = opts.timezone ?? appZone();
   const executeTimeoutMs = opts.executeTimeoutMs ?? 600_000;
   const executeModel = opts.executeModel || "claude/intermediate";
+  const asked = opts.executePermission || "bypassPermissions";
+  if (asked !== "default" && !(EXECUTE_PERMISSIONS as readonly string[]).includes(asked)) throw new Error(`TODO_EXECUTE_PERMISSION must be default or one of ${EXECUTE_PERMISSIONS.join(", ")}, got ${asked}`);
+  const executePermission = asked === "default" ? undefined : (asked as ExecutePermission);
   const autoReview = opts.autoReview ?? true;
   const tools = (opts.webTools ?? true) ? WEB_TOOLS : [];
   const model: ModelClient | null = spaceApiUrl && spaceAppToken ? modelClient(spaceApiUrl, spaceAppToken) : null;
@@ -265,7 +270,8 @@ export function createServer(opts: ServerOptions) {
         let text = "";
         let ended = false;
         // A full-mode agent run, not a chat answer: the CLI keeps its native context and tools; no `system`, so its own agent instructions stay.
-        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
+        // The person handed the task over, so the agent gets the write tier too: without it the headless CLI can read but not act.
+        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", ...(executePermission ? { permissionMode: executePermission } : {}), model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
           if (ev.event === "delta") { text += ev.text; l.text = text; l.emit("delta", { text: ev.text }); }
           else if (ev.event === "done") { ended = true; finished = finishRun(db, run.id, { ok: true, output: ev.text || text, callId: ev.call?.id ?? null, model: ev.call?.model ?? null, costUsd: ev.call?.costUsd ?? null }); }
           else { ended = true; finished = finishRun(db, run.id, { ok: false, output: text, error: ev.error, callId: ev.call?.id ?? null, costUsd: ev.call?.costUsd ?? null }); }
@@ -750,7 +756,7 @@ if (import.meta.main) {
   const { server } = createServer({
     machine, machines, forward,
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
-    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, webTools: config.web, autoReview: config.autoReview,
+    timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, executePermission: config.executePermission, webTools: config.web, autoReview: config.autoReview,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
