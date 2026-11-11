@@ -670,6 +670,8 @@ function fillDetail(t: Todo) {
   d.doing.textContent = t.status === "doing" ? L("返回待办", "Back to open") : L("开始做", "Start");
   d.defer.textContent = t.status === "deferred" ? L("恢复待办", "Restore") : L("暂不处理", "Defer");
   d.defer.hidden = t.status === "done" || t.status === "dropped" || t.status === "review";
+  // A subtask moves with its parent, so only a top-level task offers the move, and only with somewhere to go.
+  $("#d-move").hidden = machines.length < 2 || t.parentId !== null;
   d.doing.hidden = t.status === "deferred" || t.status === "review";
   d.review.hidden = t.status !== "open" && t.status !== "doing";
   d.accept.hidden = d.reject.hidden = t.status !== "review";
@@ -691,13 +693,14 @@ function closeDetail() {
   liveAbort?.abort(); liveAbort = null;
   if (plan.full.open) plan.full.close();
   if (ask.dialog.open) ask.dialog.close();
+  if (move.dialog.open) move.dialog.close();
   cur = null; showDetailEl(false);
   syncUrl();
   void load();
 }
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => closeDrawers();
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#run-ask").open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#run-ask").open && !$<HTMLDialogElement>("#move-ask").open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
 
@@ -1231,6 +1234,35 @@ async function runExecute(kind: RunKind, permission: RunPermission) {
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
   followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, kind, permission, timezone: TZ, lang: EN ? "en" : "zh" }) });
 }
+
+// ---- moving the task shown to another machine's list (POST /api/transfer on this machine, which copies it there and removes it here)
+const move = { dialog: $<HTMLDialogElement>("#move-ask"), to: $<HTMLSelectElement>("#mv-to"), hint: $("#mv-hint"), start: $<HTMLButtonElement>("#mv-start") };
+$("#d-move").onclick = () => {
+  if (!cur) return;
+  const from = at();
+  move.to.innerHTML = machines.filter((x) => x.via !== from).map((x) => `<option value="${esc(x.via)}">${esc(x.name)}</option>`).join("");
+  move.hint.textContent = L(
+    `现在在 ${nameOf(from)}。备注、方案、子任务、操作记录和图片一起转移；方案的旧版本、历史和 AI 执行记录留在原机器。`,
+    `It is on ${nameOf(from)} now. Notes, plan, subtasks, records and pictures move with it; the plan's older versions, the history and the AI runs stay on that machine.`);
+  move.dialog.showModal();
+};
+$("#mv-close").onclick = $("#mv-cancel").onclick = () => move.dialog.close();
+move.dialog.addEventListener("click", (e) => { if (e.target === move.dialog) move.dialog.close(); });
+move.start.onclick = async () => {
+  if (!cur) return;
+  const id = cur.id; const from = at(); const to = move.to.value;
+  move.start.disabled = true;
+  try {
+    clearTimeout(saveTimer); await flushSave(); await flushPlan();
+    // Asked of this machine whichever list the task is on: it reaches both ends.
+    const r = await api<{ todo: { id: number }; warning?: string }>("/api/transfer", { method: "POST", body: JSON.stringify({ id, from, to, lang: EN ? "en" : "zh" }) }, "");
+    move.dialog.close();
+    closeDetail();
+    toast(r.warning ?? L(`已转移到 ${nameOf(to)}（#${r.todo.id}）`, `Moved to ${nameOf(to)} (#${r.todo.id})`));
+    void loadMachines(); void load();
+  } catch (e) { toast((e as Error).message); }
+  finally { move.start.disabled = false; }
+};
 
 // ---- the dialog before a run: what it does (research or code) and what it may do on the machine
 const ask = {

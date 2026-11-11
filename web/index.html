@@ -154,6 +154,7 @@
         <button type="button" class="sp-btn sm" id="d-accept" title="验收通过，标为完成" data-en-title="Accept and mark done" data-en="Accept">通过</button>
         <button type="button" class="sp-btn sm" id="d-reject" title="验收不通过，写明原因后退回进行中" data-en-title="Not accepted: say why and send it back to in progress" data-en="Send back">退回</button>
         <button type="button" class="sp-btn sm" id="d-defer">暂不处理</button>
+        <button type="button" class="sp-btn sm" id="d-move" title="把这条任务转移到另一台机器的清单" data-en-title="Move this task to another machine's list" data-en="Move to…" hidden>转移到…</button>
         <div class="grow"></div>
         <button type="button" class="sp-btn ghost sm danger-text" id="d-delete" data-en="Delete">删除</button>
       </div>
@@ -225,6 +226,24 @@
       <button type="button" class="sp-icon-btn" id="pf-close" title="关闭" aria-label="关闭" data-en-title="Close" data-en-aria="Close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
     <div class="pf-body md" id="pf-body" tabindex="0" aria-label="完整方案" data-en-aria="The whole plan"></div>
+  </div>
+</dialog>
+
+<dialog class="sp-dialog sm" id="move-ask" aria-labelledby="mv-title">
+  <div class="sp-dialog-head">
+    <h2 class="sp-tt" id="mv-title"><span class="sp-sq" aria-hidden="true"></span><span data-en="Move to another machine">转移到另一台机器</span></h2>
+    <button type="button" class="sp-icon-btn" id="mv-close" title="关闭" aria-label="关闭" data-en-title="Close" data-en-aria="Close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="sp-dialog-body ra-body">
+    <div class="sp-field">
+      <label for="mv-to" data-en="Machine">机器</label>
+      <select id="mv-to" class="sp-select"></select>
+      <span class="sp-hint" id="mv-hint"></span>
+    </div>
+  </div>
+  <div class="sp-dialog-foot">
+    <button type="button" class="sp-btn" id="mv-cancel" data-en="Cancel">取消</button>
+    <button type="button" class="sp-btn-ink" id="mv-start" data-en="Move">转移</button>
   </div>
 </dialog>
 

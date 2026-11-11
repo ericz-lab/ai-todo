@@ -371,18 +371,26 @@ export class ConflictError extends Error {
 }
 
 /** One transaction per append: simultaneous writers never replace each other's entries. */
-export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = []): OperationRecord | null {
+export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = [], createdAt?: string): OperationRecord | null {
   const text = attachments.length && content === "" ? "" : cleanRecord(content);
   if (!SOURCES.includes(source)) throw new Error("invalid record source");
   return db.transaction(() => {
     if (!getTodo(db, todoId)) return null;
     const t = now();
+    // A record moved from another machine keeps the time it was written; the event is of now.
     const row = db.query("INSERT INTO todo_records (todo_id, content, source, created_at, attachments) VALUES (?, ?, ?, ?, ?) RETURNING *")
-      .get(todoId, text, source, t, JSON.stringify(attachments)) as Row;
+      .get(todoId, text, source, createdAt ?? t, JSON.stringify(attachments)) as Row;
     db.query("UPDATE todos SET updated_at = ? WHERE id = ?").run(t, todoId);
     addEvent(db, todoId, "record-added", { source, recordId: row.id }, t);
     return toRecord(row);
   })();
+}
+
+/** A record's own time as a request gives it (a move from another machine): a past ISO instant, else undefined. */
+export function cleanRecordTime(v: unknown): string | undefined {
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(v)) return undefined;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) && ms <= Date.now() ? new Date(ms).toISOString() : undefined;
 }
 
 /** Newest first, with a stable id cursor so new appends cannot shift older pages. */
