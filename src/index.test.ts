@@ -31,6 +31,11 @@ const space = Bun.serve({
       }
       return Response.json({ ok: true, text: "[]", call: { id: 3 } });
     }
+    if (url.pathname === "/api/model/status") return Response.json({ ok: true, runtimes: [{ name: "claude", kind: "claude-code", backend: "local" }, { name: "dsh", kind: "deepseek-harness", backend: "local" }, { name: "far", kind: "codex-cli", backend: "ssh:box" }] });
+    if (url.pathname === "/api/tasks/models") return Response.json({ ok: true, models: [
+      { value: "claude/basic", runtime: "claude", tier: "basic", model: "haiku" }, { value: "claude/advanced", runtime: "claude", tier: "advanced", model: "fable", unavailable: "signed-out" },
+      { value: "dsh/basic", runtime: "dsh", tier: "basic", model: "deepseek-flash" }, { value: "far/basic", runtime: "far", tier: "basic", model: "gpt-6-luna" },
+    ] });
     if (url.pathname.endsWith("/widget.js")) return new Response("window.SpaceChat={}", { headers: { "content-type": "application/javascript", etag: '"w1"' } });
     return Response.json({ ok: true, threads: [] });
   },
@@ -149,6 +154,11 @@ describe("service", () => {
     expect((await run({ kind: "code", permission: "acceptEdits" })).body!.permissionMode).toBe("acceptEdits");
     expect((await run({ kind: "research", permission: "bypassPermissions" })).body!.permissionMode).toBe("bypassPermissions");
     expect((await run({ permission: "default" })).body!).not.toHaveProperty("permissionMode");
+    // The model of a run: one of this machine's that can carry a full-mode run; the dialog lists them.
+    expect((await j("/api/execute/models")).body).toEqual({ ok: true, default: "claude/intermediate", options: [{ value: "claude/basic", runtime: "claude", tier: "basic", model: "haiku" }] });
+    expect((await run({ kind: "research", model: "claude/basic" })).body!.model).toBe("claude/basic");
+    expect((await run({ model: "" })).body!.model).toBe("claude/intermediate");
+    expect((await run({ model: "david:codex/basic" })).status).toBe(400);
     expect((await run({ kind: "deploy" })).status).toBe(400);
     expect((await run({ permission: "root" })).status).toBe(400);
   });

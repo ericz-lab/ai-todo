@@ -259,7 +259,7 @@ export function createServer(opts: ServerOptions) {
   };
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
-  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang, ask: { kind?: ExecuteKind; permission?: ExecutePermission | "default" } = {}): Live => {
+  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang, ask: { kind?: ExecuteKind; permission?: ExecutePermission | "default"; model?: string } = {}): Live => {
     // What the run may do: the request's own choice; else research reads only and anything else gets this machine's default.
     const permission = ask.permission !== undefined ? (ask.permission === "default" ? undefined : ask.permission) : ask.kind === "research" ? undefined : executePermission;
     // `todo` carries the plan; executePrompt cuts it (and the parent's) to what a prompt can hold.
@@ -274,7 +274,7 @@ export function createServer(opts: ServerOptions) {
         let ended = false;
         // A full-mode agent run, not a chat answer: the CLI keeps its native context and tools; no `system`, so its own agent instructions stay.
         // The person handed the task over, so the agent gets the write tier too: without it the headless CLI can read but not act.
-        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", ...(permission ? { permissionMode: permission } : {}), model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
+        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", ...(permission ? { permissionMode: permission } : {}), model: ask.model || executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
           if (ev.event === "delta") { text += ev.text; l.text = text; l.emit("delta", { text: ev.text }); }
           else if (ev.event === "done") { ended = true; finished = finishRun(db, run.id, { ok: true, output: ev.text || text, callId: ev.call?.id ?? null, model: ev.call?.model ?? null, costUsd: ev.call?.costUsd ?? null }); }
           else { ended = true; finished = finishRun(db, run.id, { ok: false, output: text, error: ev.error, callId: ev.call?.id ?? null, costUsd: ev.call?.costUsd ?? null }); }
@@ -338,9 +338,32 @@ export function createServer(opts: ServerOptions) {
     const extra = String(b.extra ?? "").slice(0, 4000);
     if (b.kind !== undefined && !(EXECUTE_KINDS as readonly unknown[]).includes(b.kind)) return fail(`kind must be one of ${EXECUTE_KINDS.join(", ")}`, 400);
     if (b.permission !== undefined && b.permission !== "default" && !(EXECUTE_PERMISSIONS as readonly unknown[]).includes(b.permission)) return fail(`permission must be default or one of ${EXECUTE_PERMISSIONS.join(", ")}`, 400);
-    const l = startExecution(todo, extra, tz(b.timezone), langOf(b.lang), { kind: b.kind as ExecuteKind | undefined, permission: b.permission as ExecutePermission | "default" | undefined });
+    // A run works on this machine, so its model is one of this machine's: `runtime/tier` or a model id, never `machine:`.
+    if (b.model !== undefined && b.model !== "" && (typeof b.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(b.model))) return fail("model must be runtime/tier or a model id of this machine");
+    const l = startExecution(todo, extra, tz(b.timezone), langOf(b.lang), { kind: b.kind as ExecuteKind | undefined, permission: b.permission as ExecutePermission | "default" | undefined, model: (b.model as string | undefined) || undefined });
     // Detached (a page on another machine, through the bus, which cannot stream): the run, then GET /api/runs/:id.
     return detached ? json({ ok: true, run: l.run }) : streamRun(l, req);
+  };
+
+  /**
+   * The models a run may use here, for the page's dialog: this machine's runtime/tier pairs whose runtime can
+   * carry a full-mode run (Claude Code or Codex, running locally), read from ai-space; `default` is the configured one.
+   */
+  const executeModels = async (): Promise<Response> => {
+    if (!spaceApiUrl || !spaceAppToken) return json({ ok: true, default: executeModel, options: [] });
+    const read = async <T>(path: string): Promise<T | null> => {
+      try {
+        const r = await fetch(`${spaceApiUrl}${path}`, { headers: { authorization: `Bearer ${spaceAppToken}` }, signal: AbortSignal.timeout(8_000) });
+        return r.ok ? ((await r.json()) as T) : null;
+      } catch { return null; }
+    };
+    const [status, tiers] = await Promise.all([
+      read<{ runtimes?: { name: string; kind: string; backend: string }[] }>("/api/model/status"),
+      read<{ models?: { value: string; runtime: string; tier: string; model: string; unavailable?: string }[] }>("/api/tasks/models"),
+    ]);
+    const full = new Set((status?.runtimes ?? []).filter((r) => (r.kind === "claude-code" || r.kind === "codex-cli") && r.backend === "local").map((r) => r.name));
+    const options = (tiers?.models ?? []).filter((m) => full.has(m.runtime) && !m.unavailable).map(({ value, runtime, tier, model }) => ({ value, runtime, tier, model }));
+    return json({ ok: true, default: executeModel, options });
   };
 
   /** One run as it stands: the text so far while it is in flight, its end once it is over. */
@@ -487,6 +510,7 @@ export function createServer(opts: ServerOptions) {
       "/icon.png": () => new Response(Bun.file(new URL("../icon.png", import.meta.url).pathname)),
       "/api/widget": (req) => json(widget(), 200, req),
       // The machines this page shows: this one, then the peers running ai-todo (on a hub).
+      "/api/execute/models": { GET: executeModels },
       "/api/machines": async () => json({ ok: true, ...(await machines()) }),
       "/api/m/:peer/*": { GET: viaPeer, POST: viaPeer, PATCH: viaPeer, PUT: viaPeer, DELETE: viaPeer },
       "/api/remote": { POST: remote },

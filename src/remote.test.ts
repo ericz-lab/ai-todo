@@ -15,6 +15,7 @@ describe("readEnvelope", () => {
     expect(readEnvelope({ method: "PATCH", path: "/api/todos/3", contentType: "application/json", body64: "e30=" })).toMatchObject({ method: "PATCH", body64: "e30=" });
     expect(readEnvelope({ method: "GET", path: "/blobs/records/3/1-ab.png" })?.path).toBe("/blobs/records/3/1-ab.png");
     expect(readEnvelope({ method: "POST", path: "/api/todos/3/execute?detach=1" })?.path).toBe("/api/todos/3/execute?detach=1");
+    expect(readEnvelope({ method: "GET", path: "/api/execute/models" })?.path).toBe("/api/execute/models");
     expect(readEnvelope({ method: "GET", path: "/api/runs/3/stream" })).toBeNull();
     expect(readEnvelope({ method: "POST", path: "/space/chat/threads" })).toBeNull();
     expect(readEnvelope({ method: "POST", path: "/api/remote" })).toBeNull();
