@@ -144,6 +144,62 @@ describe("one page over two machines", () => {
     expect(small.headers.get("content-encoding")).toBeNull();
   });
 
+  test("a task moves to the peer and back with its plan, stage, subtasks, records and pictures", async () => {
+    type Detail = { todo: { id: number; title: string; status: string; plan: string; tags: string[] }; subtasks: { title: string; status: string }[]; records: { content: string; createdAt: string; attachments?: { key: string }[] }[] };
+    const { todo } = (await (await send("/api/todos", "POST", { title: "Move me", notes: "n", plan: "# How", tags: ["ops"], priority: 2 })).json()) as { todo: { id: number } };
+    await send(`/api/todos/${todo.id}`, "PATCH", { status: "doing" });
+    const sub = (await (await send("/api/todos", "POST", { title: "Step one", parentId: todo.id })).json()) as { todo: { id: number } };
+    await send(`/api/todos/${sub.todo.id}`, "PATCH", { status: "done" });
+    await send(`/api/todos/${todo.id}/records`, "POST", { content: "first note", createdAt: "2026-01-02T03:04:05.000Z" });
+    const form = new FormData();
+    form.append("content", "with a picture");
+    form.append("images", new File([png], "shot.png", { type: "image/png" }));
+    expect((await fetch(`${base}/api/todos/${todo.id}/records`, { method: "POST", body: form })).status).toBe(201);
+
+    const moved = await send("/api/transfer", "POST", { id: todo.id, from: "", to: "david" });
+    expect(moved.status).toBe(200);
+    const out = (await moved.json()) as { todo: { id: number }; machine: string };
+    expect(out.machine).toBe("david");
+    expect((await fetch(`${base}/api/todos/${todo.id}`)).status).toBe(404);
+    const there = (await (await fetch(`${peerBase}/api/todos/${out.todo.id}`)).json()) as Detail;
+    expect(there.todo).toMatchObject({ title: "Move me", status: "doing", plan: "# How", tags: ["ops"] });
+    expect(there.subtasks).toMatchObject([{ title: "Step one", status: "done" }]);
+    // Newest first: the note of the move, then the records in their order, the first with its own time.
+    expect(there.records.map((r) => r.content)).toEqual(["从 seoul 转移而来（在那边是 #" + todo.id + "）。", "with a picture", "first note"]);
+    expect(there.records[2]!.createdAt).toBe("2026-01-02T03:04:05.000Z");
+    const img = await fetch(`${peerBase}/blobs/${there.records[1]!.attachments![0]!.key}`);
+    expect(Buffer.from(await img.arrayBuffer())).toEqual(png);
+
+    // And back to the hub from the peer, asked on the hub's page.
+    const back = (await (await send("/api/transfer", "POST", { id: out.todo.id, from: "david", to: "", lang: "en" })).json()) as { todo: { id: number }; machine: string };
+    expect(back.machine).toBe("");
+    expect((await fetch(`${peerBase}/api/todos/${out.todo.id}`)).status).toBe(404);
+    const here = (await (await fetch(`${base}/api/todos/${back.todo.id}`)).json()) as Detail;
+    expect(here.todo).toMatchObject({ title: "Move me", status: "doing" });
+    expect(here.records[0]!.content).toBe(`Moved here from david (it was #${out.todo.id} there).`);
+    expect(here.records).toHaveLength(4);
+  });
+
+  test("a move is refused for a subtask, the same machine, an unknown machine or another site, and a failed one leaves nothing behind", async () => {
+    const { todo } = (await (await send("/api/todos", "POST", { title: "Parent" })).json()) as { todo: { id: number } };
+    const sub = (await (await send("/api/todos", "POST", { title: "Child", parentId: todo.id })).json()) as { todo: { id: number } };
+    expect((await send("/api/transfer", "POST", { id: sub.todo.id, from: "", to: "david" })).status).toBe(400);
+    expect((await send("/api/transfer", "POST", { id: todo.id, from: "", to: "" })).status).toBe(400);
+    expect((await send("/api/transfer", "POST", { id: todo.id, from: "", to: "nowhere" })).status).toBe(404);
+    expect((await send("/api/transfer", "POST", { id: 99999, from: "", to: "david" })).status).toBe(404);
+    expect((await send("/api/transfer", "POST", { id: todo.id, from: "", to: "david" }, { origin: "https://evil.example", host: "todo.example" })).status).toBe(403);
+    // A record too large for the bus stops the move: the task stays here and the peer keeps no copy.
+    await send(`/api/todos/${todo.id}/records`, "POST", { content: "small" });
+    const big = new FormData();
+    big.append("content", "big picture");
+    big.append("images", new File([Buffer.concat([png, Buffer.alloc(3_000_000)])], "big.png", { type: "image/png" }));
+    expect((await fetch(`${base}/api/todos/${todo.id}/records`, { method: "POST", body: big })).status).toBe(201);
+    const before = ((await (await fetch(`${peerBase}/api/todos?status=all`)).json()) as { todos: unknown[] }).todos.length;
+    expect((await send("/api/transfer", "POST", { id: todo.id, from: "", to: "david" })).status).toBe(413);
+    expect((await fetch(`${base}/api/todos/${todo.id}`)).status).toBe(200);
+    expect(((await (await fetch(`${peerBase}/api/todos?status=all`)).json()) as { todos: unknown[] }).todos.length).toBe(before);
+  });
+
   test("a run is read as it stands", async () => {
     expect((await fetch(`${base}/api/m/david/api/runs/999`)).status).toBe(404);
   });

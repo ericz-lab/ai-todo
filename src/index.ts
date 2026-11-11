@@ -12,7 +12,8 @@
 import type { Database } from "bun:sqlite";
 import { KEY_RE, mimeOfKey, newKey, openStore, sniffImage, type BlobStore } from "./blobs.ts";
 import type { RecordImage } from "./types.ts";
-import { callerAllowed, envelopeOf, forwarder, machineFinder, readEnvelope, type Envelope, type Machines } from "./remote.ts";
+import { callerAllowed, envelopeOf, forwarder, machineFinder, MAX_FORWARD_BYTES, readEnvelope, type Envelope, type Machines } from "./remote.ts";
+import { transferTodo, type MachineCall } from "./transfer.ts";
 import index from "../web/index.html";
 import {
   chatContext, draftsFromAnswer, executeAgentPrompt, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
@@ -20,7 +21,7 @@ import {
 } from "./ai.ts";
 import { appZone, config, databasePath } from "./config.ts";
 import {
-  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getRun, getTodo,
+  appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, cleanRecordTime, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getRun, getTodo,
   listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
 } from "./db.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
@@ -211,7 +212,7 @@ export function createServer(opts: ServerOptions) {
         staged.push({ key, name: file.name.slice(0, 255), mime, size: file.size });
         await blobs.put(key, file, mime);
       }
-      const record = appendRecord(db, id, raw.trim(), source(form.get("source")), staged);
+      const record = appendRecord(db, id, raw.trim(), source(form.get("source")), staged, cleanRecordTime(form.get("createdAt")));
       committed = !!record;
       return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
     } catch (e) { return fail((e as Error).message); }
@@ -442,6 +443,38 @@ export function createServer(opts: ServerOptions) {
     return new Response(await res.arrayBuffer(), { status: res.status, headers });
   };
 
+  /** One of this page's routes on a machine: here over loopback, on a peer through the bus (transfer.ts). */
+  const onMachine: MachineCall = async (machine, method, path, payload) => {
+    let contentType: string | undefined;
+    let bytes: Uint8Array | undefined;
+    if (payload && "json" in payload) { contentType = "application/json"; bytes = new TextEncoder().encode(JSON.stringify(payload.json)); }
+    else if (payload) { const r = new Response(payload.form); contentType = r.headers.get("content-type") ?? undefined; bytes = new Uint8Array(await r.arrayBuffer()); }
+    if (!machine) return fetch(`http://127.0.0.1:${selfPort}${path}`, { method, headers: { ...(contentType ? { "content-type": contentType } : {}), "accept-encoding": "identity" }, ...(bytes ? { body: Buffer.from(bytes) } : {}) });
+    if (bytes && bytes.byteLength > MAX_FORWARD_BYTES) return fail("too large to send to another machine (about 2.9 MB at most)", 413);
+    const env = readEnvelope({ method, path, contentType, ...(bytes ? { body64: Buffer.from(bytes).toString("base64") } : {}) });
+    return env && opts.forward ? opts.forward(machine, env) : fail("not found", 404);
+  };
+
+  /** POST /api/transfer { id, from, to, lang? }: move a todo from one machine's list to another's ("" = this machine). */
+  const transfer = async (req: Request): Promise<Response> => {
+    const origin = req.headers.get("origin");
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    try { if (origin && new URL(origin).host !== host) return fail("writes must come from this app's page", 403); } catch { return fail("writes must come from this app's page", 403); }
+    const b = await body(req);
+    const id = idOf(String(b.id ?? ""));
+    const from = typeof b.from === "string" ? b.from : "";
+    const to = typeof b.to === "string" ? b.to : "";
+    if (!id) return fail("id is required");
+    if (from === to) return fail("the task is already on that machine");
+    const m = await machines();
+    for (const x of [from, to]) if (x && !m.peers.includes(x)) return fail(`no machine ${x} runs ai-todo`, 404);
+    const name = (x: string) => x || m.local || "this machine";
+    const r = await transferTodo(onMachine, { id, from, to, fromName: name(from), toName: name(to), lang: langOf(b.lang) });
+    if (!r.ok) return fail(r.error, r.status);
+    log(`transfer #${id} ${name(from)} -> ${name(to)} #${r.todo.id}${r.warning ? ` (${r.warning})` : ""}`);
+    return json({ ok: true, todo: r.todo, machine: to, ...(r.warning ? { warning: r.warning } : {}) });
+  };
+
   const server = Bun.serve({
     maxRequestBodySize: 61 * 1024 * 1024,
     hostname: "127.0.0.1",
@@ -457,6 +490,7 @@ export function createServer(opts: ServerOptions) {
       "/api/machines": async () => json({ ok: true, ...(await machines()) }),
       "/api/m/:peer/*": { GET: viaPeer, POST: viaPeer, PATCH: viaPeer, PUT: viaPeer, DELETE: viaPeer },
       "/api/remote": { POST: remote },
+      "/api/transfer": { POST: transfer },
 
       "/api/todos": {
         GET: (req) => { try { return json(listBody(new URL(req.url).searchParams), 200, req); } catch (e) { return fail((e as Error).message); } },
@@ -640,7 +674,7 @@ export function createServer(opts: ServerOptions) {
           }
           try {
             const b = await body(req);
-            const record = appendRecord(db, id, b.content, source(b.source));
+            const record = appendRecord(db, id, b.content, source(b.source), [], cleanRecordTime(b.createdAt));
             return record ? json({ ok: true, record }, 201) : fail("no such todo", 404);
           } catch (e) { return fail((e as Error).message); }
         },
