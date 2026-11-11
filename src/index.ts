@@ -16,7 +16,7 @@ import { callerAllowed, envelopeOf, forwarder, machineFinder, readEnvelope, type
 import index from "../web/index.html";
 import {
   chatContext, draftsFromAnswer, executeAgentPrompt, executePrompt, extractActions, extractDrafts, modelClient, PARSE_SYSTEM, parsePrompt,
-  EXECUTE_PERMISSIONS, type ExecutePermission, type ModelClient,
+  EXECUTE_KINDS, EXECUTE_PERMISSIONS, type ExecuteKind, type ExecutePermission, type ModelClient,
 } from "./ai.ts";
 import { appZone, config, databasePath } from "./config.ts";
 import {
@@ -258,9 +258,11 @@ export function createServer(opts: ServerOptions) {
   };
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
-  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang): Live => {
+  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang, ask: { kind?: ExecuteKind; permission?: ExecutePermission | "default" } = {}): Live => {
+    // What the run may do: the request's own choice; else research reads only and anything else gets this machine's default.
+    const permission = ask.permission !== undefined ? (ask.permission === "default" ? undefined : ask.permission) : ask.kind === "research" ? undefined : executePermission;
     // `todo` carries the plan; executePrompt cuts it (and the parent's) to what a prompt can hold.
-    const prompt = executePrompt(todo, { now: now(), timezone, lang: answerLang, extra, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
+    const prompt = executePrompt(todo, { now: now(), timezone, lang: answerLang, extra, kind: ask.kind, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
     const run = createRun(db, todo.id, prompt, null);
     const l = new Live(run);
     live.set(run.id, l);
@@ -271,7 +273,7 @@ export function createServer(opts: ServerOptions) {
         let ended = false;
         // A full-mode agent run, not a chat answer: the CLI keeps its native context and tools; no `system`, so its own agent instructions stay.
         // The person handed the task over, so the agent gets the write tier too: without it the headless CLI can read but not act.
-        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", ...(executePermission ? { permissionMode: executePermission } : {}), model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
+        for await (const ev of model!.stream({ prompt: executeAgentPrompt(prompt), mode: "full", ...(permission ? { permissionMode: permission } : {}), model: executeModel, tag: "execute", timeoutMs: executeTimeoutMs })) {
           if (ev.event === "delta") { text += ev.text; l.text = text; l.emit("delta", { text: ev.text }); }
           else if (ev.event === "done") { ended = true; finished = finishRun(db, run.id, { ok: true, output: ev.text || text, callId: ev.call?.id ?? null, model: ev.call?.model ?? null, costUsd: ev.call?.costUsd ?? null }); }
           else { ended = true; finished = finishRun(db, run.id, { ok: false, output: text, error: ev.error, callId: ev.call?.id ?? null, costUsd: ev.call?.costUsd ?? null }); }
@@ -333,7 +335,9 @@ export function createServer(opts: ServerOptions) {
       finishRun(db, running.id, { ok: false, output: "", error: "abandoned: the service restarted" });
     }
     const extra = String(b.extra ?? "").slice(0, 4000);
-    const l = startExecution(todo, extra, tz(b.timezone), langOf(b.lang));
+    if (b.kind !== undefined && !(EXECUTE_KINDS as readonly unknown[]).includes(b.kind)) return fail(`kind must be one of ${EXECUTE_KINDS.join(", ")}`, 400);
+    if (b.permission !== undefined && b.permission !== "default" && !(EXECUTE_PERMISSIONS as readonly unknown[]).includes(b.permission)) return fail(`permission must be default or one of ${EXECUTE_PERMISSIONS.join(", ")}`, 400);
+    const l = startExecution(todo, extra, tz(b.timezone), langOf(b.lang), { kind: b.kind as ExecuteKind | undefined, permission: b.permission as ExecutePermission | "default" | undefined });
     // Detached (a page on another machine, through the bus, which cannot stream): the run, then GET /api/runs/:id.
     return detached ? json({ ok: true, run: l.run }) : streamRun(l, req);
   };

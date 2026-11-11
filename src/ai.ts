@@ -155,7 +155,15 @@ Rules:
 /** What the full-mode agent reads: the brief, then the task. */
 export const executeAgentPrompt = (task: string) => `${EXECUTE_SYSTEM}\n\n---\n\n${task}`;
 
-export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; parent?: Todo | null; subtasks?: Todo[]; records?: OperationRecord[] }): string {
+/** What the person asked of a run in the page's dialog: look into it and report, or write the code. */
+export const EXECUTE_KINDS = ["research", "code"] as const;
+export type ExecuteKind = (typeof EXECUTE_KINDS)[number];
+const KIND_BRIEF: Record<ExecuteKind, string> = {
+  research: "Kind of run: research only. Investigate, read and compare, then report what you found and what you recommend. Change nothing: no file edits, no commits, no commands that alter data or systems.",
+  code: "Kind of run: write code. Make the change the task asks for in the code it names, run that project's own checks, and report what changed (files, branch or commit) and what was verified.",
+};
+
+export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; lang: string; extra?: string; kind?: ExecuteKind; parent?: Todo | null; subtasks?: Todo[]; records?: OperationRecord[] }): string {
   const lines = [
     `Clock: ${clockLine(opts.now, opts.timezone)}`,
     `Answer language: ${opts.lang}`,
@@ -172,6 +180,7 @@ export function executePrompt(todo: Todo, opts: { now: Date; timezone: string; l
   if (opts.subtasks?.length) lines.push("", "Its steps (subtasks):", ...opts.subtasks.map((s) => `- [${s.status === "done" ? "x" : " "}] ${s.title}`));
   if (todo.status === "review") lines.push("", "This task is awaiting the person's acceptance; a rejection reason may be in the records below.");
   if (opts.records?.length) lines.push("", "Recent operation records (newest first; older entries may be omitted):", ...opts.records.map((r) => `[${r.createdAt}, ${r.source}] ${r.content.slice(0, 4000)}`));
+  if (opts.kind) lines.push("", KIND_BRIEF[opts.kind]);
   if (opts.extra?.trim()) lines.push("", "Instructions for this run:", opts.extra.trim());
   return lines.join("\n");
 }

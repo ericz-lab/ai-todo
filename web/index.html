@@ -145,7 +145,7 @@
         <textarea id="d-notes" class="sp-textarea d-notes" aria-labelledby="d-notes-label" placeholder="备注，支持 Markdown：链接、列表、子步骤…" data-en-ph="Notes, in Markdown: links, lists, steps…" spellcheck="false"></textarea>
       </div>
       <div class="d-run">
-        <button type="button" class="sp-btn-ink" id="d-execute" title="交给 AI 智能体执行（完整模式、全部权限，不是对话）" data-en-title="Hand it to an AI agent to do (full mode with full permission, not a chat)"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9Z"/></svg><span data-en="Run with AI">AI 执行</span></button>
+        <button type="button" class="sp-btn-ink" id="d-execute" title="交给 AI 智能体执行：先选仅调研还是写代码，以及权限" data-en-title="Hand it to an AI agent: choose research or code, and what it may do"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9Z"/></svg><span data-en="Run with AI">AI 执行</span></button>
         <input id="d-extra" class="sp-input d-extra" placeholder="给这次执行的补充说明（可选）" autocomplete="off" aria-label="给这次执行的补充说明" data-en-ph="Extra instructions for this run (optional)" data-en-aria="Extra instructions for this run">
       </div>
       <div class="d-actions">
@@ -225,6 +225,36 @@
       <button type="button" class="sp-icon-btn" id="pf-close" title="关闭" aria-label="关闭" data-en-title="Close" data-en-aria="Close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
     <div class="pf-body md" id="pf-body" tabindex="0" aria-label="完整方案" data-en-aria="The whole plan"></div>
+  </div>
+</dialog>
+
+<dialog class="sp-dialog sm" id="run-ask" aria-labelledby="ra-title">
+  <div class="sp-dialog-head">
+    <h2 class="sp-tt" id="ra-title"><span class="sp-sq" aria-hidden="true"></span><span data-en="Run with AI">AI 执行</span></h2>
+    <button type="button" class="sp-icon-btn" id="ra-close" title="关闭" aria-label="关闭" data-en-title="Close" data-en-aria="Close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="sp-dialog-body ra-body">
+    <div class="sp-field">
+      <span class="lbl" id="ra-kind-label" data-en="What this run does">这次做什么</span>
+      <div class="sp-seg in-tile ra-kind" id="ra-kind" role="group" aria-labelledby="ra-kind-label">
+        <button type="button" data-kind="research" aria-pressed="true" data-en="Research only">仅调研</button>
+        <button type="button" data-kind="code" aria-pressed="false" data-en="Write code">写代码</button>
+      </div>
+      <span class="sp-hint" id="ra-kind-hint"></span>
+    </div>
+    <div class="sp-field">
+      <label for="ra-permission" data-en="Permission mode">权限模式</label>
+      <select id="ra-permission" class="sp-select">
+        <option value="default" data-en="Read only">只读</option>
+        <option value="acceptEdits" data-en="Edit files">可改文件</option>
+        <option value="bypassPermissions" data-en="Full permission">全部权限</option>
+      </select>
+      <span class="sp-hint" id="ra-permission-hint"></span>
+    </div>
+  </div>
+  <div class="sp-dialog-foot">
+    <button type="button" class="sp-btn" id="ra-cancel" data-en="Cancel">取消</button>
+    <button type="button" class="sp-btn-ink" id="ra-start" data-en="Start">开始执行</button>
   </div>
 </dialog>
 
