@@ -16,6 +16,11 @@ export const config = {
   autoReview: env("TODO_AUTO_REVIEW", "1") !== "0",
   /** Model of an execution, a full-mode agent run: `<runtime>/<tier>` or a model id (ai-space docs/model-tiers-and-modes.md); opus by default. */
   executeModel: env("TODO_EXECUTE_MODEL", "claude/intermediate"),
+  /**
+   * What an execution may do on the machine: `bypassPermissions` (default; the agent writes files and runs
+   * commands without asking), `acceptEdits`, `plan`, or `default` for the runtime's read-only headless tier.
+   */
+  executePermission: env("TODO_EXECUTE_PERMISSION", "bypassPermissions"),
   /** Wall-clock cap of one execution, seconds. */
   executeTimeoutSec: num("TODO_EXECUTE_TIMEOUT", 600),
   /** Language of the page and of the model's answers. */

@@ -590,7 +590,7 @@ function rowHtml(t: Item, nested = false): string {
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
     <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="${L("验收通过，标为完成", "Accept and mark done")}">${L("通过", "Accept")}</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="${L("验收不通过，写明原因后退回", "Not accepted: say why and send it back")}">${L("退回", "Send back")}</button></span>` : ""}</div>
-    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行（完整模式，不是对话）", "Hand it to an AI agent to do (full mode, not a chat)")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
+    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行（完整模式、全部权限，不是对话）", "Hand it to an AI agent to do (full mode with full permission, not a chat)")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
 /** The row shows the new state at once; the list is read again once the machine has it (and put back when it refused). */

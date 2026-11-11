@@ -9,7 +9,10 @@ import type { Action, Draft, Todo, OperationRecord } from "./types.ts";
 // ---- the model service (docs/model.md)
 
 /** `mode`: slim is a bare completion; full keeps the CLI's native agent context and tools (ai-space docs/model-tiers-and-modes.md). */
-export type ModelRequest = { prompt: string; system?: string; tag: string; tools?: string[]; thinking?: number; timeoutMs?: number; model?: string; mode?: "slim" | "full" };
+export type ModelRequest = { prompt: string; system?: string; tag: string; tools?: string[]; thinking?: number; timeoutMs?: number; model?: string; mode?: "slim" | "full"; permissionMode?: ExecutePermission };
+/** Write tier of a full-mode call (ai-space docs/model.md): `bypassPermissions` is every tool and command without asking. */
+export const EXECUTE_PERMISSIONS = ["acceptEdits", "bypassPermissions", "plan"] as const;
+export type ExecutePermission = (typeof EXECUTE_PERMISSIONS)[number];
 export type ModelCall = { id: number; model?: string; backend?: string; costUsd?: number | null; durationMs?: number };
 export type ModelResult = { ok: true; text: string; call?: ModelCall } | { ok: false; error: string; call?: ModelCall };
 export type ModelEvent = { event: "delta"; text: string } | { event: "done"; text: string; call?: ModelCall } | { event: "error"; error: string; call?: ModelCall };

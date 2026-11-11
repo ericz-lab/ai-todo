@@ -117,7 +117,7 @@ describe("service", () => {
     expect((events[3]!.data.run as Run)).toMatchObject({ status: "ok", output: "## 结果\n查好了。", callId: 2, model: "opus", costUsd: 0.12 });
     const call = calls.find((c) => c.body.tag === "execute")!;
     // A full-mode agent run on opus, with its native tools and instructions: no tool list, no system.
-    expect(call.body).toMatchObject({ mode: "full", model: "claude/intermediate", stream: true });
+    expect(call.body).toMatchObject({ mode: "full", permissionMode: "bypassPermissions", model: "claude/intermediate", stream: true });
     expect(call.body).not.toHaveProperty("tools");
     expect(call.body).not.toHaveProperty("system");
     expect(String(call.body.prompt)).toStartWith("You are the executor behind a todo app, running as a full agent");
