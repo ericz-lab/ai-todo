@@ -590,7 +590,7 @@ function rowHtml(t: Item, nested = false): string {
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
     <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="${L("验收通过，标为完成", "Accept and mark done")}">${L("通过", "Accept")}</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="${L("验收不通过，写明原因后退回", "Not accepted: say why and send it back")}">${L("退回", "Send back")}</button></span>` : ""}</div>
-    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行（完整模式、全部权限，不是对话）", "Hand it to an AI agent to do (full mode with full permission, not a chat)")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
+    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行：先选仅调研还是写代码，以及权限", "Hand it to an AI agent: choose research or code, and what it may do")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
 /** The row shows the new state at once; the list is read again once the machine has it (and put back when it refused). */
@@ -660,7 +660,7 @@ async function openDetail(id: number, execute = false) {
   const running = r.runs.find((x) => x.status === "running");
   if (!running && aiRuns.delete(runKey(id))) renderList();
   if (running) followRun(`/api/runs/${running.id}/stream`, {});
-  else if (execute) void runExecute();
+  else if (execute) askRun();
   else d.title.focus();
 }
 function fillDetail(t: Todo) {
@@ -690,13 +690,14 @@ function closeDetail() {
   clearTimeout(saveTimer); void flushSave(); void flushPlan();
   liveAbort?.abort(); liveAbort = null;
   if (plan.full.open) plan.full.close();
+  if (ask.dialog.open) ask.dialog.close();
   cur = null; showDetailEl(false);
   syncUrl();
   void load();
 }
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => closeDrawers();
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#run-ask").open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
 
@@ -1222,12 +1223,64 @@ function renderEvents(events: TodoEvent[]) {
   }).join("") || `<div>${L("无", "None")}</div>`;
 }
 
-/** Start an execution, or reattach to the one in flight, and draw it as it streams. */
-async function runExecute() {
+type RunKind = "research" | "code";
+type RunPermission = "default" | "acceptEdits" | "bypassPermissions";
+/** Start an execution of the kind and with the permission picked in the dialog, and draw it as it streams. */
+async function runExecute(kind: RunKind, permission: RunPermission) {
   if (!cur) return;
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
-  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, timezone: TZ, lang: EN ? "en" : "zh" }) });
+  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, kind, permission, timezone: TZ, lang: EN ? "en" : "zh" }) });
 }
+
+// ---- the dialog before a run: what it does (research or code) and what it may do on the machine
+const ask = {
+  dialog: $<HTMLDialogElement>("#run-ask"), kind: $("#ra-kind"), kindHint: $("#ra-kind-hint"),
+  permission: $<HTMLSelectElement>("#ra-permission"), permissionHint: $("#ra-permission-hint"),
+};
+const RUN_KINDS: RunKind[] = ["research", "code"];
+const RUN_PERMISSIONS: RunPermission[] = ["default", "acceptEdits", "bypassPermissions"];
+/** What each kind starts with: research reads, code needs to write and run its checks. */
+const KIND_PERMISSION: Record<RunKind, RunPermission> = { research: "default", code: "bypassPermissions" };
+const saved = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+const keep = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+let askKind: RunKind = RUN_KINDS.find((k) => k === saved("todo-run-kind")) ?? "research";
+/** The permission for a kind: the one picked for it last in this browser, else the kind's own. */
+const permissionFor = (k: RunKind): RunPermission => RUN_PERMISSIONS.find((p) => p === saved(`todo-run-permission-${k}`)) ?? KIND_PERMISSION[k];
+function showAsk() {
+  for (const b of ask.kind.querySelectorAll<HTMLElement>("[data-kind]")) b.setAttribute("aria-pressed", String(b.dataset.kind === askKind));
+  ask.kindHint.textContent = askKind === "research"
+    ? L("只查资料、读代码，给出结论和建议，不改任何东西。", "Looks things up and reads the code, then reports findings and a recommendation. Changes nothing.")
+    : L("按任务改代码、跑检查，报告改了什么。", "Changes the code the task names, runs its checks and reports what changed.");
+  const p = ask.permission.value as RunPermission;
+  ask.permissionHint.textContent = p === "default"
+    ? L("只能读，不能改文件或执行会改动的命令。", "Reads only: no file edits, no commands that change anything.")
+    : p === "acceptEdits"
+      ? L("可以改工作区里的文件；其他命令仍受限。", "May edit files in the workspace; other commands stay restricted.")
+      : L("不经询问即可改文件、执行任意命令（以这台机器的服务用户身份）。", "Edits files and runs any command without asking, as this machine's service user.");
+}
+/** Open the dialog for the todo shown; nothing starts until 开始执行. */
+function askRun() {
+  if (!cur || d.execute.disabled) return;
+  ask.permission.value = permissionFor(askKind);
+  showAsk();
+  ask.dialog.showModal();
+}
+ask.kind.addEventListener("click", (e) => {
+  const k = (e.target as HTMLElement).closest<HTMLElement>("[data-kind]")?.dataset.kind as RunKind | undefined;
+  if (!k || k === askKind) return;
+  askKind = k;
+  ask.permission.value = permissionFor(k);
+  showAsk();
+});
+ask.permission.onchange = () => showAsk();
+$("#ra-close").onclick = $("#ra-cancel").onclick = () => ask.dialog.close();
+ask.dialog.addEventListener("click", (e) => { if (e.target === ask.dialog) ask.dialog.close(); });
+$("#ra-start").onclick = () => {
+  const permission = ask.permission.value as RunPermission;
+  keep("todo-run-kind", askKind); keep(`todo-run-permission-${askKind}`, permission);
+  ask.dialog.close();
+  void runExecute(askKind, permission);
+};
 /**
  * A run on another machine, as the same events the stream gives: the bus cannot stream, so the run
  * is started detached and read every 1.5 s (`GET /api/runs/:id`) until it ends.
@@ -1310,7 +1363,7 @@ async function* sse(body: ReadableStream<Uint8Array>): AsyncIterable<{ event: st
     }
   }
 }
-d.execute.onclick = () => void runExecute();
+d.execute.onclick = () => askRun();
 
 // ---- the AI panel
 const FENCE_RE = /```todo-(drafts|actions)[ \t]*\r?\n[\s\S]*?```\s*/g;

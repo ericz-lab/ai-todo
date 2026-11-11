@@ -132,6 +132,26 @@ describe("service", () => {
     expect((await j(`/api/todos/${todo.id}`)).body.events as unknown[]).toHaveLength(4);   // created, doing, run-started, run-finished
     expect((await fetch(`${base}/api/todos/999/execute`, { method: "POST" })).status).toBe(404);
   });
+  test("execute: the kind of run goes into the prompt and decides the permission unless the request names one", async () => {
+    const run = async (body: Record<string, unknown>) => {
+      const before = calls.length;
+      const res = await fetch(`${base}/api/todos/${todo.id}/execute`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      if (res.status !== 200) return { status: res.status, body: undefined };
+      await sse(res);
+      return { status: 200, body: calls.slice(before).find((c) => c.body.tag === "execute")!.body };
+    };
+    const research = (await run({ kind: "research" })).body!;
+    expect(research).not.toHaveProperty("permissionMode");
+    expect(String(research.prompt)).toContain("Kind of run: research only.");
+    const code = (await run({ kind: "code" })).body!;
+    expect(code.permissionMode).toBe("bypassPermissions");
+    expect(String(code.prompt)).toContain("Kind of run: write code.");
+    expect((await run({ kind: "code", permission: "acceptEdits" })).body!.permissionMode).toBe("acceptEdits");
+    expect((await run({ kind: "research", permission: "bypassPermissions" })).body!.permissionMode).toBe("bypassPermissions");
+    expect((await run({ permission: "default" })).body!).not.toHaveProperty("permissionMode");
+    expect((await run({ kind: "deploy" })).status).toBe(400);
+    expect((await run({ permission: "root" })).status).toBe(400);
+  });
   test("chat context and applied actions", async () => {
     const ctx = await j("/api/ai/context?timezone=Asia/Shanghai");
     expect(ctx.body).not.toHaveProperty("model");

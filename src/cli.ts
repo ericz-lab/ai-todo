@@ -13,7 +13,7 @@
  *   bun src/cli.ts accept <id> | reject <id> <reason>   the person's verdict on a task in review
  *   bun src/cli.ts move <id> <parent-id|none>   make it a subtask of another todo, or take it out
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
- *   bun src/cli.ts execute <id> [--extra text]   hand the todo to the AI, print the result
+ *   bun src/cli.ts execute <id> [--extra text] [--kind research|code] [--permission p]   hand the todo to the AI, print the result
  * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
  * package was given (<data dir>/service.port, written by its entry; scripts/pack.ts), else 8970.
  */
@@ -158,8 +158,8 @@ try {
       break;
     }
     case "execute": {
-      const id = Number(args[0]); if (!id) die("usage: execute <id> [--extra text]");
-      const r = await fetch(`${base}/api/todos/${id}/execute`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extra: flags.extra ?? "" }) });
+      const id = Number(args[0]); if (!id) die("usage: execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan]");
+      const r = await fetch(`${base}/api/todos/${id}/execute`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extra: flags.extra ?? "", ...(flags.kind ? { kind: flags.kind } : {}), ...(flags.permission ? { permission: flags.permission } : {}) }) });
       if (!r.ok) die(`failed: ${((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`}`);
       const dec = new TextDecoder(); let buf = "";
       const reader = r.body!.getReader();
@@ -181,7 +181,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text]");
+      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan]");
   }
 } catch (e) {
   die((e as Error).message);

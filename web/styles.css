@@ -163,6 +163,8 @@ body.modal-open { overflow:hidden }
 .d-run { display:flex;align-items:center;gap:8px;flex-wrap:wrap }
 .d-run .ic { width:14px;height:14px }
 .d-extra { flex:1;min-width:180px;width:auto }
+.ra-body { display:flex;flex-direction:column;gap:16px;padding:16px 20px 20px }
+.ra-kind { align-self:flex-start }
 .d-actions { display:flex;align-items:center;gap:6px;flex-wrap:wrap }
 .reject-box { display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:var(--r-well);background:var(--warn-bg) }
 .reject-bar { display:flex;align-items:center;gap:8px }
