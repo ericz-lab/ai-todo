@@ -5,12 +5,12 @@
  * person adds) or a `todo-actions` block (applied by the server, the results listed under the
  * answer).
  */
+import { moveRow, scopeOf, type Counts } from "./tally.ts";
 
 type Status = "open" | "doing" | "review" | "deferred" | "done" | "dropped";
 type Todo = { id: number; title: string; notes: string; plan: string; planVersion: number; status: Status; priority: 0 | 1 | 2 | 3; due: string | null; tags: string[]; project: string | null; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; updatedAt: string; doneAt: string | null };
 /** A row of the list (`GET /api/todos?fields=list`): no plan, the notes cut to an excerpt; the detail has the rest. */
 type Item = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string; m?: string };
-type Counts = { active: number; review: number; deferred: number; done: number };
 type ListAnswer = { todos: Item[]; tags: { tag: string; n: number }[]; projects: { project: string; n: number }[]; counts: Counts; total?: number; nextBefore?: string | null; trend?: { t: string; v: number }[] };
 type Draft = { title: string; notes?: string; due?: string | null; priority?: number; tags?: string[]; project?: string | null };
 type Run = { id: number; todoId: number; status: "running" | "ok" | "error"; output: string; error: string | null; model: string | null; costUsd: number | null; startedAt: string; finishedAt: string | null };
@@ -265,6 +265,9 @@ async function load() {
     for (const w of ws) for (const p of w) days.set(p.t, (days.get(p.t) ?? 0) + (p.v ?? 0));
     trend = [...days].sort((a, b) => a[0].localeCompare(b[0])).slice(-7).map(([t, v]) => ({ t, v }));
   }
+  // The 机器 section's open counts too, from the answers just read: on their own they are read only at boot.
+  for (const x of ok) { const mc = machines.find((y) => y.via === x.m); if (mc) { mc.active = x.r.counts.active; mc.error = null; } }
+  renderMachines();
   renderSide();
   renderHead();
   renderKpis();
@@ -593,13 +596,29 @@ function rowHtml(t: Item, nested = false): string {
     ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行：先选仅调研还是写代码，以及权限", "Hand it to an AI agent: choose research or code, and what it may do")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
-/** The row shows the new state at once; the list is read again once the machine has it (and put back when it refused). */
-function showStatus(id: number, status: Status) {
+/**
+ * The row and the left column (lists, projects, tags, the machine's count) show the new state at once;
+ * the list is read again once the machine has it (and put back when it refused).
+ */
+function showStatus(id: number, status: Status | "deleted") {
   const m = allMode() ? detailVia : undefined;
-  const t = todos.find((x) => x.id === id && x.m === m);
+  const t = todos.find((x) => x.id === id && x.m === m) ?? active.find((x) => x.id === id && x.m === m);
   if (!t) return;
-  t.status = status;
-  t.doneAt = status === "done" ? new Date().toISOString() : null;
+  // A read already on its way has the state from before: it is dropped, the read after the change draws.
+  loadSeq++;
+  const r = moveRow({ counts, active, tags, projects }, t, status, scopeOf(statusOf(view)));
+  ({ counts, active, tags, projects } = r);
+  const mc = machines.find((x) => x.via === (t.m ?? via));
+  if (mc && mc.active !== null) mc.active = Math.max(0, mc.active + r.activeDelta);
+  for (const x of r.moved) {
+    const row = todos.find((y) => y.id === x.id && y.m === x.m);
+    if (!row) continue;
+    if (x.status === null) todos = todos.filter((y) => y !== row);
+    else if (x.status !== row.status) { row.status = x.status as Status; row.doneAt = x.status === "done" ? new Date().toISOString() : null; }
+  }
+  renderMachines();
+  renderSide();
+  renderKpis();
   renderList();
 }
 async function setStatus(id: number, status: Status) {
@@ -610,11 +629,12 @@ async function setStatus(id: number, status: Status) {
 }
 /** The person's verdict on a task in review: accept closes it, reject sends it back to doing with the reason as a record. */
 async function verdict(id: number, v: "accept" | "reject", reason?: string): Promise<boolean> {
-  if (v === "accept" && cur?.id !== id) showStatus(id, "done");
+  showStatus(id, v === "accept" ? "done" : "doing");
   try {
     await api(`/api/todos/${id}/review`, { method: "POST", body: JSON.stringify({ verdict: v, reason, source: "manual" }) });
     toast(v === "accept" ? L("验收通过，已完成", "Accepted and done") : L("已退回，原因已写入操作记录", "Sent back; the reason is in the operation records"));
-    if (cur?.id === id) await openDetail(id); else await load();
+    if (cur?.id === id) await openDetail(id);
+    await load().catch((e) => toast((e as Error).message));
     return true;
   } catch (e) { toast((e as Error).message); await load(); return false; }
 }
@@ -903,8 +923,12 @@ function scheduleSave(patch: Record<string, unknown>) {
 async function flushSave() {
   if (!cur || !Object.keys(pending).length) return;
   const body = pending; pending = {};
-  try { const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify(body) }); if (cur && cur.id === r.todo.id) cur = r.todo; }
-  catch (e) { toast(L(`保存失败：${(e as Error).message}`, `Not saved: ${(e as Error).message}`)); }
+  try {
+    const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify(body) });
+    if (cur && cur.id === r.todo.id) cur = r.todo;
+    // The due day moves it between 今天 and 即将, a project or tag between their counts.
+    if ("due" in body || "project" in body || "tags" in body) void load().catch(() => {});
+  } catch (e) { toast(L(`保存失败：${(e as Error).message}`, `Not saved: ${(e as Error).message}`)); }
 }
 // While an IME composes (pinyin), the field holds the raw syllables: save when the word is committed.
 d.title.oninput = (e) => { if (!(e as InputEvent).isComposing) scheduleSave({ title: d.title.value }); };
@@ -919,7 +943,10 @@ d.done.onchange = async () => {
   if (!cur) return;
   if (cur.status === "review" && d.done.checked) { await verdict(cur.id, "accept"); return; }
   const open = curSubs.filter((s) => s.status === "open" || s.status === "doing" || s.status === "deferred").length;
-  await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status: d.done.checked ? "done" : "open" }) });
+  const status = d.done.checked ? "done" : "open";
+  showStatus(cur.id, status);
+  try { await api(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); }
+  catch (e) { toast((e as Error).message); d.done.checked = !d.done.checked; await load().catch(() => {}); return; }
   toast(d.done.checked ? (open ? L(`已完成，连同 ${open} 个子任务`, `Done, with ${open} subtask(s)`) : L("已完成", "Done")) : L("已重新打开", "Reopened"));
   closeDetail();
 };
@@ -952,9 +979,12 @@ function renderSubs(parent: Todo | null, subs: Todo[]) {
     $<HTMLElement>(".title", row).onclick = () => void openDetail(id);
   });
 }
-async function patchSub(id: number, patch: Record<string, unknown>, note?: string) {
+async function patchSub(id: number, patch: { status?: Status; parentId?: null }, note?: string) {
+  if (patch.status) showStatus(id, patch.status);
   try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify(patch) }); await refreshSubs(); if (note) toast(note); }
   catch (e) { toast((e as Error).message); }
+  // The list behind the detail and its counts: a step done or detached changes them.
+  void load().catch((e) => toast((e as Error).message));
 }
 async function refreshSubs() {
   if (!cur) return;
@@ -971,6 +1001,7 @@ d.subAdd.onkeydown = async (e) => {
     await api("/api/todos", { method: "POST", body: JSON.stringify({ title, parentId: cur.id, project: cur.project, tags: cur.tags }) });
     d.subAdd.value = "";
     await refreshSubs();
+    void load().catch((e) => toast((e as Error).message));
   } catch (err) { toast((err as Error).message); }
   finally { d.subAdd.disabled = false; d.subAdd.focus(); }
 };
@@ -981,19 +1012,22 @@ d.defer.onclick = async () => {
   d.defer.disabled = true;
   try {
     clearTimeout(saveTimer); await flushSave(); await flushPlan();
+    showStatus(id, restoring ? "open" : "deferred");
     const r = await api<{ todo: Todo }>(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: restoring ? "open" : "deferred" }) });
     await load();
     if (cur?.id === id) await openDetail(id);
     toast(restoring ? (isLate(r.todo) ? L("已恢复待办，原截止日期已过，请调整日期", "Restored; its due date has passed, set a new one") : L("已恢复待办", "Restored")) : L("已暂不处理，可从左侧列表恢复", "Deferred; restore it from the list on the left"));
-  } catch (e) { toast((e as Error).message); }
+  } catch (e) { toast((e as Error).message); void load().catch(() => {}); }
   finally { d.defer.disabled = false; }
 };
 d.review.onclick = async () => {
   if (!cur) return;
   const id = cur.id;
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
+  showStatus(id, "review");
   try { await api(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) }); toast(L("已提交验收", "Submitted for review")); if (cur?.id === id) await openDetail(id); }
   catch (e) { toast((e as Error).message); }
+  void load().catch((e) => toast((e as Error).message));
 };
 d.accept.onclick = () => { if (cur) void verdict(cur.id, "accept"); };
 /** Rejecting asks why: the reason is required and becomes an operation record. */
@@ -1013,8 +1047,26 @@ d.rejectSend.onclick = async () => {
   try { if (await verdict(cur.id, "reject", reason)) d.rejectReason.value = ""; }
   finally { d.rejectSend.disabled = false; }
 };
-d.doing.onclick = async () => { if (!cur) return; const status = cur.status === "doing" ? "open" : "doing"; const r = await api<{ todo: Todo }>(`/api/todos/${cur.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); cur = r.todo; fillDetail(cur); };
-$("#d-delete").onclick = async () => { const open = curSubs.length; if (!cur || !confirm(L(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`, `Delete “${cur.title}”${open ? ` and its ${open} subtask(s)` : ""}?`))) return; await api(`/api/todos/${cur.id}`, { method: "DELETE" }); cur = null; showDetailEl(false); toast(L("已删除", "Deleted")); void load(); };
+// In progress counts under 今天, so the left column changes too.
+d.doing.onclick = async () => {
+  if (!cur) return;
+  const id = cur.id;
+  const status = cur.status === "doing" ? "open" : "doing";
+  showStatus(id, status);
+  try { const r = await api<{ todo: Todo }>(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); if (cur?.id === id) { cur = r.todo; fillDetail(cur); } }
+  catch (e) { toast((e as Error).message); }
+  void load().catch((e) => toast((e as Error).message));
+};
+$("#d-delete").onclick = async () => {
+  const open = curSubs.length;
+  if (!cur || !confirm(L(`删除「${cur.title}」${open ? `和它的 ${open} 个子任务` : ""}？`, `Delete “${cur.title}”${open ? ` and its ${open} subtask(s)` : ""}?`))) return;
+  const id = cur.id;
+  try { await api(`/api/todos/${id}`, { method: "DELETE" }); }
+  catch (e) { toast((e as Error).message); return; }
+  showStatus(id, "deleted");
+  cur = null; showDetailEl(false); toast(L("已删除", "Deleted"));
+  void load().catch((e) => toast((e as Error).message));
+};
 
 // Drafts stay with their todo when the detail is closed or another task is opened.
 const recordDrafts = new Map<number, string>();
@@ -1391,6 +1443,8 @@ function followRun(url: string, init: RequestInit) {
         else if (event === "done" || event === "error") {
           if (todoId !== undefined && aiRuns.delete(runKey(todoId, runM))) renderList();
           if (p.run && cur?.id === todoId) { const r = await api<{ runs: Run[]; events: TodoEvent[] }>(`/api/todos/${todoId}`); renderRuns(r.runs); renderEvents(r.events); }
+          // A finished run moves its todo to review: the list and its counts follow.
+          void load().catch(() => {});
           if (event === "error") toast(L(`执行失败：${p.error ?? "未知错误"}`, `Run failed: ${p.error ?? "unknown error"}`)); else toast(L("AI 执行完成", "AI run finished"));
         }
       }
