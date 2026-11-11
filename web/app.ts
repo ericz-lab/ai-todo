@@ -1229,10 +1229,10 @@ function renderEvents(events: TodoEvent[]) {
 type RunKind = "research" | "code";
 type RunPermission = "default" | "acceptEdits" | "bypassPermissions";
 /** Start an execution of the kind and with the permission picked in the dialog, and draw it as it streams. */
-async function runExecute(kind: RunKind, permission: RunPermission) {
+async function runExecute(kind: RunKind, permission: RunPermission, model: string) {
   if (!cur) return;
   clearTimeout(saveTimer); await flushSave(); await flushPlan();
-  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, kind, permission, timezone: TZ, lang: EN ? "en" : "zh" }) });
+  followRun(`/api/todos/${cur.id}/execute`, { method: "POST", body: JSON.stringify({ extra: d.extra.value, kind, permission, ...(model ? { model } : {}), timezone: TZ, lang: EN ? "en" : "zh" }) });
 }
 
 // ---- moving the task shown to another machine's list (POST /api/transfer on this machine, which copies it there and removes it here)
@@ -1268,7 +1268,28 @@ move.start.onclick = async () => {
 const ask = {
   dialog: $<HTMLDialogElement>("#run-ask"), kind: $("#ra-kind"), kindHint: $("#ra-kind-hint"),
   permission: $<HTMLSelectElement>("#ra-permission"), permissionHint: $("#ra-permission-hint"),
+  model: $<HTMLSelectElement>("#ra-model"), modelField: $("#ra-model-field"),
 };
+const TIERS: Record<string, [string, string]> = { basic: ["基础", "Basic"], junior: ["初级", "Junior"], intermediate: ["中级", "Intermediate"], advanced: ["高级", "Advanced"] };
+/**
+ * The models the task's machine can run it on (the run works there), with that machine's default first. The pick is
+ * remembered per machine: each has its own runtimes. A machine on a version without the list keeps its default.
+ */
+async function loadRunModels() {
+  const m = at();
+  ask.modelField.hidden = true;
+  ask.model.innerHTML = "";
+  try {
+    const r = await api<{ default: string; options: { value: string; runtime: string; tier: string; model: string }[] }>("/api/execute/models", {}, m);
+    if (m !== at() || !ask.dialog.open || !r.options.length) return;
+    const opt = (value: string, label: string) => `<option value="${esc(value)}">${esc(label)}</option>`;
+    ask.model.innerHTML = opt("", L(`默认（${r.default}）`, `Default (${r.default})`))
+      + r.options.map((o) => opt(o.value, `${o.runtime} · ${L(...(TIERS[o.tier] ?? [o.tier, o.tier]))} · ${o.model}`)).join("");
+    const last = saved(`todo-run-model-${m}`) ?? "";
+    ask.model.value = r.options.some((o) => o.value === last) ? last : "";
+    ask.modelField.hidden = false;
+  } catch { /* the machine cannot say: its default model runs */ }
+}
 const RUN_KINDS: RunKind[] = ["research", "code"];
 const RUN_PERMISSIONS: RunPermission[] = ["default", "acceptEdits", "bypassPermissions"];
 /** What each kind starts with: research reads, code needs to write and run its checks. */
@@ -1296,6 +1317,7 @@ function askRun() {
   ask.permission.value = permissionFor(askKind);
   showAsk();
   ask.dialog.showModal();
+  void loadRunModels();
 }
 ask.kind.addEventListener("click", (e) => {
   const k = (e.target as HTMLElement).closest<HTMLElement>("[data-kind]")?.dataset.kind as RunKind | undefined;
@@ -1309,9 +1331,11 @@ $("#ra-close").onclick = $("#ra-cancel").onclick = () => ask.dialog.close();
 ask.dialog.addEventListener("click", (e) => { if (e.target === ask.dialog) ask.dialog.close(); });
 $("#ra-start").onclick = () => {
   const permission = ask.permission.value as RunPermission;
+  const model = ask.modelField.hidden ? "" : ask.model.value;
   keep("todo-run-kind", askKind); keep(`todo-run-permission-${askKind}`, permission);
+  if (!ask.modelField.hidden) keep(`todo-run-model-${at()}`, model);
   ask.dialog.close();
-  void runExecute(askKind, permission);
+  void runExecute(askKind, permission, model);
 };
 /**
  * A run on another machine, as the same events the stream gives: the bus cannot stream, so the run
