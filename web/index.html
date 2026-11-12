@@ -208,7 +208,13 @@
         <label class="sp-hint" for="d-record-images" data-en="Add pictures (up to 6, 10 MB each; pasting into the box works too)">添加图片（最多 6 张，每张 10 MB，也可粘贴到输入框）</label>
         <input id="d-record-images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
         <div id="d-record-preview" class="record-images"></div>
-        <button type="button" class="sp-btn sm" id="d-record-add" data-en="Add record">追加记录</button>
+        <div class="record-actions">
+          <button type="button" class="sp-btn sm" id="d-record-add" data-en="Add record">追加记录</button>
+          <span class="sp-hint" data-en="Quick reply:">快捷回复：</span>
+          <div id="d-record-quick" class="record-quick" role="group" aria-label="快捷回复" data-en-aria="Quick replies">
+            <button type="button" class="sp-btn ghost sm" data-quick data-en="Do it">做</button>
+          </div>
+        </div>
         <div id="d-records" aria-live="polite"></div>
         <button type="button" class="sp-btn sm" id="d-record-more" data-en="Earlier records" hidden>查看更早记录</button>
       </section>

@@ -204,6 +204,8 @@ body.modal-open { overflow:hidden }
 .d-parent { display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted) }
 .d-parent a { color:var(--ink);font-weight:500;text-underline-offset:3px }
 .operation-records > .sp-btn { align-self:flex-start }
+.record-actions { display:flex;align-items:center;gap:8px;flex-wrap:wrap }
+.record-quick { display:flex;gap:6px;flex-wrap:wrap }
 .operation-record { padding:12px 0;border-top:1px solid var(--line);overflow-wrap:anywhere }
 .operation-record .run-head [data-edit] { margin-left:auto;opacity:.6 }
 .operation-record:hover .run-head [data-edit],.operation-record .run-head [data-edit]:focus-visible { opacity:1 }

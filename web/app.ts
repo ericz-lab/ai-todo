@@ -1286,25 +1286,45 @@ d.records.addEventListener("click", async (e) => {
     } catch (err) { toast((err as Error).message); }
   }
 });
+/** Append a record written by the person and show the refreshed list. */
+async function postRecord(id: number, content: string, images: { file: File }[] = []) {
+  const form = new FormData();
+  form.set("content", content);
+  form.set("source", "manual");
+  for (const image of images) form.append("images", image.file);
+  await api(`/api/todos/${id}/records`, { method: "POST", body: form });
+}
+async function refreshRecords(id: number) {
+  const detail = await api<Detail>(`/api/todos/${id}`);
+  if (cur?.id === id) { renderRecords(detail); renderEvents(detail.events); }
+}
+// A quick reply ("做") is one tap: it appends its own text as a record and leaves the draft and pictures alone.
+$("#d-record-quick").onclick = async event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-quick]");
+  if (!button || !cur || button.disabled) return;
+  const id = cur.id, content = button.textContent!.trim();
+  button.disabled = true;
+  try {
+    await postRecord(id, content);
+    toast(L(`已追加记录：${content}`, `Record added: ${content}`));
+    await refreshRecords(id);
+  } catch (e) { toast((e as Error).message); }
+  finally { button.disabled = false; }
+};
 d.recordAdd.onclick = async () => {
   if (!cur || d.recordAdd.disabled || (!d.recordContent.value.trim() && !recordImages.get(cur.id)?.length)) return;
   const id = cur.id, content = d.recordContent.value;
   const images = [...(recordImages.get(id) ?? [])];
   d.recordAdd.disabled = true;
   try {
-    const form = new FormData();
-    form.set("content", content);
-    form.set("source", "manual");
-    for (const image of images) form.append("images", image.file);
-    await api(`/api/todos/${id}/records`, { method: "POST", body: form });
+    await postRecord(id, content, images);
     recordImages.set(id, (recordImages.get(id) ?? []).filter(image => !images.includes(image)));
     for (const image of images) URL.revokeObjectURL(image.url);
     if (cur?.id === id) renderRecordImages();
     if (recordDrafts.get(id) === content) recordDrafts.delete(id);
     if (cur?.id === id && d.recordContent.value === content) d.recordContent.value = "";
     toast(L("已追加记录", "Record added"));
-    const detail = await api<Detail>(`/api/todos/${id}`);
-    if (cur?.id === id) { renderRecords(detail); renderEvents(detail.events); }
+    await refreshRecords(id);
   } catch (e) { toast((e as Error).message); }
   finally { d.recordAdd.disabled = false; }
 };
