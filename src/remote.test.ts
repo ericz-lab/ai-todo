@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileStore } from "./blobs.ts";
 import { openDb } from "./db.ts";
 import { createServer } from "./index.ts";
-import { callerAllowed, forwarder, machineFinder, readEnvelope } from "./remote.ts";
+import { callerAllowed, forwarder, machineFinder, readEnvelope, timeoutOf, TIMEOUTS } from "./remote.ts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
 
@@ -42,7 +42,37 @@ describe("readEnvelope", () => {
       { app: "old/ai-todo", peer: "old", provides: [{ name: "add" }] },
       { app: "x/keep", peer: "x", provides: [{ name: "ops" }] },
     ] })) as unknown as typeof fetch;
-    expect(await machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "seoul", token: "t", fetch: f })()).toEqual({ local: "seoul", peers: ["david", "thinkbook"], error: null });
+    expect(await machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "seoul", token: "t", fetch: f })()).toEqual({ local: "seoul", peers: ["david", "thinkbook"], peerHealth: [{ name: "david", online: true }, { name: "thinkbook", online: true }], error: null });
+  });
+
+  test("machines: a peer ai-space marks down is listed offline; one without health (an older ai-space) is online", async () => {
+    const f = (async () => Response.json({ apps: [
+      { app: "asleep/ai-todo", peer: "asleep", provides: ["ops"], health: "down", asOf: "2026-11-11T08:00:00.000Z" },
+      { app: "up/ai-todo", peer: "up", provides: ["ops"], health: "ok", asOf: "2026-11-11T09:00:00.000Z" },
+      { app: "old/ai-todo", peer: "old", provides: ["ops"] },
+      { app: "asleep/keep", peer: "asleep", provides: ["ops"], health: "ok" },
+    ] })) as unknown as typeof fetch;
+    expect(await machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "hub", token: "t", fetch: f })()).toEqual({
+      local: "hub", peers: ["asleep", "old", "up"], error: null,
+      peerHealth: [{ name: "asleep", online: false, asOf: "2026-11-11T08:00:00.000Z" }, { name: "old", online: true }, { name: "up", online: true, asOf: "2026-11-11T09:00:00.000Z" }],
+    });
+  });
+
+  test("machines: no ai-space answering leaves this machine alone, with the reason", async () => {
+    const f = (async () => { throw new Error("connection refused"); }) as unknown as typeof fetch;
+    expect(await machineFinder({ apiUrl: "http://s", app: "ai-todo", local: "solo", token: "", fetch: f })()).toEqual({ local: "solo", peers: [], peerHealth: [], error: "connection refused" });
+  });
+
+  test("forward waits: 12 s for a read, a minute for a write or a picture, the long wait for an execution and a parse", () => {
+    expect(timeoutOf({ method: "GET", path: "/api/todos?status=active&fields=list&limit=1" })).toBe(12_000);
+    expect(timeoutOf({ method: "GET", path: "/api/ai/context?lang=en" })).toBe(12_000);
+    expect(timeoutOf({ method: "GET", path: "/blobs/records/3/1-ab.png" })).toBe(60_000);
+    expect(timeoutOf({ method: "PATCH", path: "/api/todos/3" })).toBe(60_000);
+    expect(timeoutOf({ method: "POST", path: "/api/todos/3/records" })).toBe(60_000);
+    expect(timeoutOf({ method: "POST", path: "/api/todos/3/execute?detach=1" })).toBe(TIMEOUTS.long);
+    expect(timeoutOf({ method: "POST", path: "/api/ai/parse" })).toBe(TIMEOUTS.long);
+    expect(timeoutOf({ method: "GET", path: "/api/todos/3" }, TIMEOUTS, true)).toBe(TIMEOUTS.long);
+    expect(TIMEOUTS.long).toBeGreaterThanOrEqual(15 * 60_000);
   });
 
   test("machines: past 30 s the kept list answers at once while the catalogue is read again", async () => {
@@ -79,7 +109,7 @@ describe("one page over two machines", () => {
   }) as unknown as typeof fetch;
   const hub = createServer({
     db: openDb(":memory:"), port: 0, web: false, blobs: fileStore(join(dir, "hub")), machine: "seoul",
-    machines: async () => ({ local: "seoul", peers: ["david"], error: null }),
+    machines: async () => ({ local: "seoul", peers: ["david"], peerHealth: [{ name: "david", online: true }], error: null }),
     forward: forwarder({ apiUrl: "http://space", app: "ai-todo", token: "t", fetch: bus }),
   }).server;
   const base = `http://127.0.0.1:${hub.port}`;
@@ -88,8 +118,8 @@ describe("one page over two machines", () => {
     fetch(base + path, { method, headers: { "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 
   test("the hub lists its machines; a peer lists none", async () => {
-    expect(await (await fetch(`${base}/api/machines`)).json()).toEqual({ ok: true, local: "seoul", peers: ["david"], error: null });
-    expect(await (await fetch(`${peerBase}/api/machines`)).json()).toEqual({ ok: true, local: "david", peers: [], error: null });
+    expect(await (await fetch(`${base}/api/machines`)).json()).toEqual({ ok: true, local: "seoul", peers: ["david"], peerHealth: [{ name: "david", online: true }], error: null });
+    expect(await (await fetch(`${peerBase}/api/machines`)).json()).toEqual({ ok: true, local: "david", peers: [], peerHealth: [], error: null });
   });
 
   test("a task made on the hub's page for the peer lives on the peer, and changes there", async () => {
@@ -203,5 +233,64 @@ describe("one page over two machines", () => {
 
   test("a run is read as it stands", async () => {
     expect((await fetch(`${base}/api/m/david/api/runs/999`)).status).toBe(404);
+  });
+});
+
+describe("a machine that does not answer", () => {
+  // ai-space for the hub: its catalogue lists a peer that is asleep, whose tunnel takes the call and never answers.
+  let calls = 0;
+  const space = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    routes: {
+      "/api/capabilities": () => Response.json({ apps: [
+        { app: "asleep/ai-todo", peer: "asleep", provides: ["ops"], health: "down", asOf: "2026-11-11T08:00:00.000Z" },
+        { app: "old/ai-todo", peer: "old", provides: ["ops"] },
+      ] }),
+    },
+    fetch: () => { calls++; return new Promise<Response>(() => {}); },
+  });
+  const spaceUrl = `http://127.0.0.1:${space.port}`;
+  const dir = mkdtempSync(join(tmpdir(), "ai-todo-silent-"));
+  const hub = createServer({
+    db: openDb(":memory:"), port: 0, web: false, blobs: fileStore(dir), machine: "hub",
+    machines: machineFinder({ apiUrl: spaceUrl, app: "ai-todo", local: "hub", token: "t" }),
+    // Short waits stand in for 12 s, a minute and the long wait.
+    forward: forwarder({ apiUrl: spaceUrl, app: "ai-todo", token: "t", timeouts: { read: 60, write: 150, long: 300 } }),
+  }).server;
+  const base = `http://127.0.0.1:${hub.port}`;
+  afterAll(() => { hub.stop(true); space.stop(true); rmSync(dir, { recursive: true, force: true }); });
+  const timed = async (res: Promise<Response>) => { const t0 = performance.now(); const r = await res; return { r, ms: performance.now() - t0, body: (await r.json()) as { ok: boolean; error: string } }; };
+
+  test("the machine list says which peer is offline", async () => {
+    expect(await (await fetch(`${base}/api/machines`)).json()).toEqual({
+      ok: true, local: "hub", peers: ["asleep", "old"], error: null,
+      peerHealth: [{ name: "asleep", online: false, asOf: "2026-11-11T08:00:00.000Z" }, { name: "old", online: true }],
+    });
+  });
+
+  test("a read gives up after its short wait with 504 and names the machine", async () => {
+    const { r, ms, body } = await timed(fetch(`${base}/api/m/old/api/todos?status=active&fields=list&limit=1`));
+    expect(r.status).toBe(504);
+    expect(body).toEqual({ ok: false, error: "machine old did not answer in 60 ms" });
+    expect(ms).toBeLessThan(140);
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  test("a write waits longer, an execution the longest", async () => {
+    const w = await timed(fetch(`${base}/api/m/old/api/todos/1`, { method: "PATCH", headers: { "content-type": "application/json" }, body: "{}" }));
+    expect(w.r.status).toBe(504);
+    expect(w.body.error).toBe("machine old did not answer in 150 ms");
+    expect(w.ms).toBeGreaterThanOrEqual(140);
+    const x = await timed(fetch(`${base}/api/m/old/api/todos/1/execute?detach=1`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+    expect(x.r.status).toBe(504);
+    expect(x.body.error).toBe("machine old did not answer in 300 ms");
+  });
+
+  test("a move's calls keep the long wait, and the task stays here", async () => {
+    const { todo } = (await (await fetch(`${base}/api/todos`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Stay" }) })).json()) as { todo: { id: number } };
+    const { r, body } = await timed(fetch(`${base}/api/transfer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: todo.id, from: "", to: "old" }) }));
+    expect(r.status).toBe(504);
+    expect(body.error).toBe("old: machine old did not answer in 300 ms");
+    expect((await fetch(`${base}/api/todos/${todo.id}`)).status).toBe(200);
   });
 });
