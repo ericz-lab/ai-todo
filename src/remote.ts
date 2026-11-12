@@ -66,13 +66,21 @@ export function callerAllowed(caller: string | null, app: string): boolean {
 export interface Machines {
   /** This machine's SPACE_NAME. */
   local: string;
-  /** Peers of this space whose ai-space lists this app's `ops`, by the name this space calls them. */
+  /** Peers of this space whose ai-space lists this app's `ops`, by the name this space calls them; offline ones too. */
   peers: string[];
+  /** One entry per peer, in the order of `peers`: whether its ai-space answers the hub, and when it last did (when known). */
+  peerHealth: PeerHealth[];
   error: string | null;
 }
 
-/** A peer's app appears as `<peer>/<app>` with `peer` set. */
-type CapabilityList = { apps?: { app?: string; peer?: string; provides?: unknown }[] };
+export interface PeerHealth { name: string; online: boolean; asOf?: string }
+
+/**
+ * A peer's app appears as `<peer>/<app>` with `peer` set. ai-space adds `health` (`down` when the
+ * peer stopped answering it) and `asOf` (its last good snapshot); an older ai-space sends neither,
+ * and such a peer counts as online.
+ */
+type CapabilityList = { apps?: { app?: string; peer?: string; provides?: unknown; health?: unknown; asOf?: unknown }[] };
 
 const provides = (p: unknown, name: string): boolean =>
   Array.isArray(p) ? p.some((x) => (typeof x === "string" ? x : (x as { name?: string })?.name) === name) : Boolean(p && typeof p === "object" && name in (p as object));
@@ -92,11 +100,16 @@ export function machineFinder(o: { apiUrl: string; app: string; local: string; t
       const res = await f(`${o.apiUrl}/api/capabilities`, { headers: o.token ? { authorization: `Bearer ${o.token}` } : {}, signal: AbortSignal.timeout(8_000) });
       if (!res.ok) throw new Error(`ai-space answered HTTP ${res.status}`);
       const d = (await res.json()) as CapabilityList;
-      const peers = [...new Set((d.apps ?? []).filter((a) => a.peer && (a.app === o.app || a.app === `${a.peer}/${o.app}`) && provides(a.provides, CAPABILITY)).map((a) => a.peer!))].sort();
-      value = { local: o.local, peers, error: null };
+      const health = new Map<string, PeerHealth>();
+      for (const a of d.apps ?? []) {
+        if (!a.peer || (a.app !== o.app && a.app !== `${a.peer}/${o.app}`) || !provides(a.provides, CAPABILITY)) continue;
+        health.set(a.peer, { name: a.peer, online: a.health !== "down", ...(typeof a.asOf === "string" ? { asOf: a.asOf } : {}) });
+      }
+      const peers = [...health.keys()].sort();
+      value = { local: o.local, peers, peerHealth: peers.map((p) => health.get(p)!), error: null };
     } catch (e) {
       // Keep the last good list through a short outage; this machine always works.
-      value = cache?.value ?? { local: o.local, peers: [], error: (e as Error).message };
+      value = cache?.value ?? { local: o.local, peers: [], peerHealth: [], error: (e as Error).message };
     }
     cache = { at: now(), value };
     return value;
@@ -108,26 +121,55 @@ export function machineFinder(o: { apiUrl: string; app: string; local: string; t
   };
 }
 
-/** Send one request to a peer's instance through ai-space's bus; its answer comes back as it was given. */
-export function forwarder(o: { apiUrl: string; app: string; token: string; fetch?: typeof fetch }) {
+/**
+ * How long a forwarded request waits for the peer. A machine that went to sleep can leave its tunnel
+ * accepting connections that never answer, so a read gives up soon and the page shows the machine as
+ * unread instead of waiting with it; a write or a picture gets a minute; an execution, the AI's parse
+ * and the calls of a move (`long`) keep the long wait they need.
+ */
+export interface Timeouts { read: number; write: number; long: number }
+export const TIMEOUTS: Timeouts = { read: 12_000, write: 60_000, long: 16 * 60_000 };
+
+/** The wait for one request: `long` for an execution, a parse and a move, `read` for a GET of the list, `write` for the rest (pictures too). */
+export function timeoutOf(env: Envelope, t: Timeouts = TIMEOUTS, long = false): number {
+  const pathname = env.path.split("?")[0]!;
+  if (long || (env.method === "POST" && (/^\/api\/todos\/\d+\/execute$/.test(pathname) || pathname === "/api/ai/parse"))) return t.long;
+  return env.method === "GET" && !pathname.startsWith("/blobs/") ? t.read : t.write;
+}
+
+/** "12 s", or milliseconds under a second (the tests' short waits). */
+const waited = (ms: number) => (ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`);
+
+/** How a forwarded request is sent: `long` for the calls of a move, which carry pictures over a slow link. */
+export type Forward = (peer: string, env: Envelope, o?: { long?: boolean }) => Promise<Response>;
+
+/** Send one request to a peer's instance through ai-space's bus; its answer comes back as it was given, or 504 when the peer is silent past its wait. */
+export function forwarder(o: { apiUrl: string; app: string; token: string; fetch?: typeof fetch; timeouts?: Partial<Timeouts> }): Forward {
   const f = o.fetch ?? fetch;
-  return async (peer: string, env: Envelope): Promise<Response> => {
+  const t = { ...TIMEOUTS, ...o.timeouts };
+  return async (peer, env, how = {}) => {
+    const ms = timeoutOf(env, t, how.long);
     let res: Response;
+    let bytes: ArrayBuffer;
     try {
+      // The wait covers the answer's body too: a link that stalls halfway is as silent as one that never starts.
       res = await f(`${o.apiUrl}/api/call/${encodeURIComponent(peer)}/${encodeURIComponent(o.app)}/${CAPABILITY}`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(o.token ? { authorization: `Bearer ${o.token}` } : {}) },
         body: JSON.stringify(env),
-        signal: AbortSignal.timeout(16 * 60_000),
+        signal: AbortSignal.timeout(ms),
       });
+      bytes = await res.arrayBuffer();
     } catch (e) {
+      const name = (e as Error).name;
+      if (name === "TimeoutError" || name === "AbortError") return Response.json({ ok: false, error: `machine ${peer} did not answer in ${waited(ms)}` }, { status: 504, headers: { "cache-control": "no-store" } });
       return Response.json({ ok: false, error: `${peer} unreachable: ${(e as Error).message}` }, { status: 502 });
     }
     const headers = new Headers({ "cache-control": "no-store" });
     const type = res.headers.get("content-type");
     if (type) headers.set("content-type", type);
     if (type?.startsWith("image/")) { headers.set("cache-control", "private, max-age=3600"); headers.set("x-content-type-options", "nosniff"); }
-    return new Response(await res.arrayBuffer(), { status: res.status, headers });
+    return new Response(bytes, { status: res.status, headers });
   };
 }
 

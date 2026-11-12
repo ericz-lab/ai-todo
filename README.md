@@ -84,7 +84,7 @@ bun src/cli.ts execute 3 --extra "只要一页"
 
 Install it on every machine that should keep its own list. On the hub (the space that has the others as
 peers) the sidebar gains a 机器 section: pick a machine to see and change its list, run its tasks and talk
-to the AI about it. A task's detail there has 转移到… (Move to…): it moves the task, with its plan, subtasks, records and pictures, to another machine's list. A peer's page shows only its own list. See [AGENTS.md](AGENTS.md#several-machines).
+to the AI about it. A task's detail there has 转移到… (Move to…): it moves the task, with its plan, subtasks, records and pictures, to another machine's list. A peer's page shows only its own list. A machine that is asleep or offline is marked 离线 and not asked; one that does not answer in time gets a row at the top of the list with 重试 (Retry), and the other machines' lists show without waiting for it. See [AGENTS.md](AGENTS.md#several-machines).
 
 ## Deploy
 

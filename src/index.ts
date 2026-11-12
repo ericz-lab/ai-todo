@@ -12,7 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { KEY_RE, mimeOfKey, newKey, openStore, sniffImage, type BlobStore } from "./blobs.ts";
 import type { RecordImage } from "./types.ts";
-import { callerAllowed, envelopeOf, forwarder, machineFinder, MAX_FORWARD_BYTES, readEnvelope, type Envelope, type Machines } from "./remote.ts";
+import { callerAllowed, envelopeOf, forwarder, machineFinder, MAX_FORWARD_BYTES, readEnvelope, type Envelope, type Forward, type Machines } from "./remote.ts";
 import { transferTodo, type MachineCall } from "./transfer.ts";
 import index from "../web/index.html";
 import {
@@ -50,7 +50,8 @@ export interface ServerOptions {
   /** This machine's SPACE_NAME, the peers running ai-todo and how to reach one; absent: this machine only. */
   machine?: string;
   machines?: () => Promise<Machines>;
-  forward?: (peer: string, env: Envelope) => Promise<Response>;
+  /** A request for a peer (remote.ts `forwarder`): reads give up after 12 s, writes after a minute, `long` keeps the long wait. */
+  forward?: Forward;
 }
 
 /** Request headers a proxied call carries to ai-space, and response headers it brings back; never cookies. */
@@ -426,7 +427,7 @@ export function createServer(opts: ServerOptions) {
   const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
 
   const machine = opts.machine ?? "";
-  const machines = opts.machines ?? (async (): Promise<Machines> => ({ local: machine, peers: [], error: null }));
+  const machines = opts.machines ?? (async (): Promise<Machines> => ({ local: machine, peers: [], peerHealth: [], error: null }));
   let selfPort = 0;
 
   /** A page request for another machine: `/api/m/<peer>/<route>` goes to that machine's instance through the bus. */
@@ -475,7 +476,8 @@ export function createServer(opts: ServerOptions) {
     if (!machine) return fetch(`http://127.0.0.1:${selfPort}${path}`, { method, headers: { ...(contentType ? { "content-type": contentType } : {}), "accept-encoding": "identity" }, ...(bytes ? { body: Buffer.from(bytes) } : {}) });
     if (bytes && bytes.byteLength > MAX_FORWARD_BYTES) return fail("too large to send to another machine (about 2.9 MB at most)", 413);
     const env = readEnvelope({ method, path, contentType, ...(bytes ? { body64: Buffer.from(bytes).toString("base64") } : {}) });
-    return env && opts.forward ? opts.forward(machine, env) : fail("not found", 404);
+    // A move carries pictures over what may be a slow link: its calls keep the long wait.
+    return env && opts.forward ? opts.forward(machine, env, { long: true }) : fail("not found", 404);
   };
 
   /** POST /api/transfer { id, from, to, lang? }: move a todo from one machine's list to another's ("" = this machine). */
@@ -509,7 +511,7 @@ export function createServer(opts: ServerOptions) {
       "/healthz": () => new Response("ok"),
       "/icon.png": () => new Response(Bun.file(new URL("../icon.png", import.meta.url).pathname)),
       "/api/widget": (req) => json(widget(), 200, req),
-      // The machines this page shows: this one, then the peers running ai-todo (on a hub).
+      // The machines this page shows: this one, then the peers running ai-todo (on a hub), each marked online or not.
       "/api/execute/models": { GET: executeModels },
       "/api/machines": async () => json({ ok: true, ...(await machines()) }),
       "/api/m/:peer/*": { GET: viaPeer, POST: viaPeer, PATCH: viaPeer, PUT: viaPeer, DELETE: viaPeer },

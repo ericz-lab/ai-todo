@@ -110,6 +110,8 @@ body.modal-open { overflow:hidden }
 .add-row input::placeholder { color:var(--muted);opacity:1 }
 .list-foot { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted) }
 .list .sp-state { padding:40px 24px }
+/* A machine whose list is not shown (offline, or its read failed): one row at the top of the list, with 重试. */
+.unread { align-items:center;margin:10px 12px }
 .list .sp-state b { color:var(--ink);font-weight:500 }
 
 @container (max-width: 760px) {

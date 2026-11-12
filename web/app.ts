@@ -5,6 +5,7 @@
  * person adds) or a `todo-actions` block (applied by the server, the results listed under the
  * answer).
  */
+import { mergeAnswers, type Answer, type Point } from "./machines.ts";
 import { moveRow, scopeOf, type Counts } from "./tally.ts";
 
 type Status = "open" | "doing" | "review" | "deferred" | "done" | "dropped";
@@ -70,7 +71,7 @@ const renderMd = (src: string): string => (typeof SpaceChat !== "undefined" ? Sp
  * The machine whose list the page shows: "" for this one, else a peer running ai-todo, whose routes
  * this service forwards (`/api/m/<peer>/…`, through ai-space's bus). Only a hub has peers to show.
  */
-type Machine = { via: string; name: string; active: number | null; error: string | null };
+type Machine = { via: string; name: string; online: boolean; asOf?: string; active: number | null; error: string | null };
 let machines: Machine[] = [];
 /** `via` for 全部机器: every machine's list on one page, each row with its machine. */
 const ALL = "*";
@@ -91,9 +92,20 @@ const chatVia = () => (aiPinned() ? aiVia! : allMode() ? "" : via);
 const on = (path: string, m = at()): string => (m && (path.startsWith("/api/") || path.startsWith("/blobs/")) ? `/api/m/${encodeURIComponent(m)}${path}` : path);
 const nameOf = (m: string) => machines.find((x) => x.via === m)?.name ?? m;
 
+/** How long the page waits for a read: past it the machine is named as not answering, instead of waiting for the edge's own cut-off. */
+const READ_WAIT_MS = 15_000;
 const api = async <T>(path: string, init: RequestInit = {}, m = at()): Promise<T> => {
-  const r = await fetch(on(path, m), { ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
-  const body = (await r.json()) as T & { ok?: boolean; error?: string };
+  const read = (init.method ?? "GET").toUpperCase() === "GET";
+  let r: Response;
+  let body: T & { ok?: boolean; error?: string };
+  try {
+    r = await fetch(on(path, m), { ...(read && !init.signal ? { signal: AbortSignal.timeout(READ_WAIT_MS) } : {}), ...init, headers: { ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }), ...(init.headers ?? {}) } });
+    body = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string };
+  } catch (e) {
+    if ((e as Error).name !== "TimeoutError") throw e;
+    const who = nameOf(m) || L("本机", "This machine");
+    throw new Error(L(`${who} ${READ_WAIT_MS / 1000} 秒内没有回答`, `${who} did not answer in ${READ_WAIT_MS / 1000} s`));
+  }
   if (!r.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${r.status}`);
   return body;
 };
@@ -221,58 +233,83 @@ const listQuery = (extra: Record<string, string> = {}) => {
 };
 /** A todo's key on the page: ids are per machine, so the all-machines view adds the machine. */
 const keyOf = (id: number, m?: string) => `${m ?? ""}#${id}`;
-/** In the all-machines view, each row carries its machine. */
-const tagged = (xs: Item[], m: string): Item[] => (allMode() ? xs.map((t) => ({ ...t, m })) : xs);
-/** The all-machines done list: newest finished first across machines. */
-const byDone = (a: Item, b: Item) => (b.doneAt ?? "").localeCompare(a.doneAt ?? "");
-/** Sums of the same key over several machines' lists (projects, tags), largest first. */
-const sumBy = <K extends string>(lists: ({ n: number } & Record<K, string>)[][], k: K) => {
-  const n = new Map<string, number>();
-  for (const l of lists) for (const x of l) n.set(x[k], (n.get(x[k]) ?? 0) + x.n);
-  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([key, v]) => ({ [k]: key, n: v }) as { n: number } & Record<K, string>);
-};
-async function load() {
-  const seq = ++loadSeq;
-  const status = statusOf(view);
-  const plain = status === "active" && !filterTag && !filterProject && !query;
-  // The list (with the week's trend) and the unfiltered active list (sidebar and cards) in parallel: one round trip.
+/**
+ * What each machine shown answered for the view (`web/machines.ts` merges them): the list draws again as
+ * each one comes, and a change on the page (`showStatus`, 加载更多) is made to its machine's answer.
+ */
+let answers = new Map<string, Answer<Item>>();
+/** The view the answers are for; a read of the same view keeps them until each machine answers again, so nothing blinks out. */
+let answersKey = "";
+/** The machines shown, in the order they are listed. */
+let shownOrder: string[] = [];
+/** Machines whose list is not shown: null when offline (not asked), else why the read failed. One row each at the top of the list. */
+const unread = new Map<string, string | null>();
+/** Machines being asked again from their row's 重试. */
+const retrying = new Set<string>();
+/** Machines asked by the newest load that have not answered yet: an empty list is not "all clear" while they may still add to it. */
+const waiting = new Set<string>();
+const offline = (m: string) => machines.find((x) => x.via === m)?.online === false;
+/** One machine's answer for the view: the list (with the week's trend) and the unfiltered active list, in parallel. */
+const readMachine = (m: string): Promise<Answer<Item>> => {
+  const plain = statusOf(view) === "active" && !filterTag && !filterProject && !query;
   // A machine on an older version answers no trend; its widget has it.
-  const from = (m: string) => Promise.all([
-    api<ListAnswer>(`/api/todos?${listQuery()}&trend=1`, {}, m).then(async (r) => [r, r.trend ?? await api<{ blocks?: { type: string; points?: { t: string; v: number | null }[] }[] }>("/api/widget", {}, m)
+  return Promise.all([
+    api<ListAnswer>(`/api/todos?${listQuery()}&trend=1`, {}, m).then(async (r) => [r, r.trend ?? await api<{ blocks?: { type: string; points?: Point[] }[] }>("/api/widget", {}, m)
       .then((x) => x.blocks?.find((b) => b.type === "trend")?.points ?? [], () => null)] as const),
     plain ? null : api<ListAnswer>("/api/todos?status=active&fields=list", {}, m),
-  ]).then(([[r, w], a]) => [r, a, w] as const);
-  // 全部机器 asks every machine at once; one that does not answer is named, the others still show.
-  const parts = allMode()
-    ? await Promise.all(machines.map((x) => from(x.via).then((p) => ({ m: x.via, p }), () => ({ m: x.via, p: null }))))
-    : [{ m: via, p: await from(via) }];
-  if (seq !== loadSeq) return;
-  const failed = parts.filter((x) => !x.p).map((x) => nameOf(x.m));
-  if (failed.length) toast(L(`读取失败：${failed.join("、")}`, `Could not read: ${failed.join(", ")}`));
-  const ok = parts.flatMap((x) => (x.p ? [{ m: x.m, r: x.p[0], a: x.p[1], w: x.p[2] }] : []));
-  todos = ok.flatMap((x) => tagged(x.r.todos, x.m));
-  if (allMode() && view === "done") todos.sort(byDone);
-  active = ok.flatMap((x) => tagged((x.a ?? x.r).todos, x.m));
-  tags = sumBy(ok.map((x) => x.r.tags), "tag"); projects = sumBy(ok.map((x) => x.r.projects), "project");
-  counts = ok.length ? ok.reduce((s, x) => ({ active: s.active + x.r.counts.active, review: s.review + x.r.counts.review, deferred: s.deferred + x.r.counts.deferred, done: s.done + x.r.counts.done }), { active: 0, review: 0, deferred: 0, done: 0 }) : null;
-  doneCursors = new Map(ok.flatMap((x) => (x.r.nextBefore ? [[x.m, x.r.nextBefore] as const] : [])));
-  doneTotal = ok.reduce((s, x) => s + (x.r.total ?? x.r.todos.length), 0);
-  // The week's completions, day by day, added up over the machines that answered it.
-  const ws = ok.flatMap((x) => (x.w ? [x.w] : []));
-  if (ws.length <= 1) trend = ws[0] ?? null;
-  else {
-    const days = new Map<string, number>();
-    for (const w of ws) for (const p of w) days.set(p.t, (days.get(p.t) ?? 0) + (p.v ?? 0));
-    trend = [...days].sort((a, b) => a[0].localeCompare(b[0])).slice(-7).map(([t, v]) => ({ t, v }));
-  }
-  // The 机器 section's open counts too, from the answers just read: on their own they are read only at boot.
-  for (const x of ok) { const mc = machines.find((y) => y.via === x.m); if (mc) { mc.active = x.r.counts.active; mc.error = null; } }
+  ]).then(([[r, w], a]) => ({ r, a, w }));
+};
+/** The answers so far as the page's list, then every part of the page that shows it. */
+function draw() {
+  const m = mergeAnswers(shownOrder.flatMap((x) => { const a = answers.get(x); return a ? [[x, a] as [string, Answer<Item>]] : []; }), { all: allMode(), done: view === "done" });
+  ({ todos, active, tags, projects, counts, doneCursors, doneTotal, trend } = m);
   renderMachines();
   renderSide();
   renderHead();
   renderKpis();
   renderList();
-  void checkRuns();
+}
+/** Ask one machine for the view; its answer (or why there is none) is drawn at once, unless a newer load started. */
+async function readInto(seq: number, m: string) {
+  try {
+    const p = await readMachine(m);
+    if (seq !== loadSeq) return;
+    answers.set(m, p);
+    unread.delete(m);
+    const mc = machines.find((y) => y.via === m);
+    // The 机器 section's open count too: on its own it is read only at boot.
+    if (mc) { mc.active = p.r.counts.active; mc.error = null; mc.online = true; }
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    answers.delete(m);
+    unread.set(m, (e as Error).message);
+    const mc = machines.find((y) => y.via === m);
+    if (mc) mc.error = (e as Error).message;
+  } finally { retrying.delete(m); if (seq === loadSeq) waiting.delete(m); }
+  draw();
+}
+async function load() {
+  const seq = ++loadSeq;
+  // 全部机器 asks every machine at once and draws each answer as it comes; an offline one is not asked.
+  const ask = allMode() ? machines.map((x) => x.via) : [via];
+  const key = `${via}|${ask.join(",")}|${listQuery()}`;
+  if (key !== answersKey) { answers = new Map(); unread.clear(); answersKey = key; }
+  shownOrder = ask;
+  for (const m of [...answers.keys()]) if (!ask.includes(m)) answers.delete(m);
+  for (const m of [...unread.keys()]) if (!ask.includes(m)) unread.delete(m);
+  const asking = ask.filter((m) => !offline(m));
+  for (const m of ask) if (offline(m)) { answers.delete(m); unread.set(m, null); }
+  waiting.clear();
+  for (const m of asking) waiting.add(m);
+  if (asking.length < ask.length) draw();
+  await Promise.all(asking.map((m) => readInto(seq, m)));
+  if (seq === loadSeq) void checkRuns();
+}
+/** 重试 on a machine's row: ask it again (an offline one too: it may be back before ai-space has seen it). */
+function retryMachine(m: string) {
+  retrying.add(m);
+  renderList();
+  void readInto(loadSeq, m);
 }
 /** Runs marked as going that this page no longer streams (the detail was closed): ask whether they ended. */
 async function checkRuns() {
@@ -288,7 +325,7 @@ async function checkRuns() {
   // A run that ended may have moved its todo (to review): read the list again; the map is smaller, so this stops.
   if (changed) void load();
 }
-/** The next page of the done list (of every machine that has more), appended. */
+/** The next page of the done list (of every machine that has more), added to that machine's answer. */
 async function loadMore(btn: HTMLButtonElement) {
   if (!doneCursors.size || view !== "done") return;
   const seq = loadSeq;
@@ -296,13 +333,13 @@ async function loadMore(btn: HTMLButtonElement) {
   try {
     const pages = await Promise.all([...doneCursors].map(([m, before]) => api<ListAnswer>(`/api/todos?${listQuery({ before })}`, {}, m).then((r) => ({ m, r }))));
     if (seq !== loadSeq) return;
-    const seen = new Set(todos.map((t) => keyOf(t.id, t.m)));
     for (const { m, r } of pages) {
-      todos = [...todos, ...tagged(r.todos, m).filter((t) => !seen.has(keyOf(t.id, t.m)))];
-      if (r.nextBefore) doneCursors.set(m, r.nextBefore); else doneCursors.delete(m);
+      const a = answers.get(m);
+      if (!a) continue;
+      const seen = new Set(a.r.todos.map((t) => t.id));
+      answers.set(m, { ...a, r: { ...a.r, todos: [...a.r.todos, ...r.todos.filter((t) => !seen.has(t.id))], nextBefore: r.nextBefore ?? null } });
     }
-    if (allMode()) todos.sort(byDone);
-    renderList();
+    draw();
   } catch (e) { toast((e as Error).message); btn.disabled = false; btn.textContent = L("加载更多", "Load more"); }
 }
 /** The address keeps the view and the machine, so a link reopens the same list. */
@@ -486,10 +523,30 @@ const addDefaults = () => ({ due: view === "today" ? todayStr() : view === "upco
 const addHint = () => EN
   ? `${view === "today" ? "Add for today" : view === "upcoming" ? "Add for tomorrow" : "Add a todo"}${allMode() ? ` (${nameOf("")})` : ""}, Enter to save`
   : `${view === "today" ? "添加到今天" : view === "upcoming" ? "添加到明天" : "添加待办"}${allMode() ? `（${nameOf("")}）` : ""}，回车保存`;
+/** A row at the top of the list for each machine not shown: offline, or why its read failed, with 重试. */
+const unreadHtml = () => [...unread].map(([m, why]) => `<div class="sp-banner warn unread" role="status">${svg("alert")}<span class="grow">${why === null
+  ? L(`<b>${esc(nameOf(m))}</b> 离线，没有去读它的清单`, `<b>${esc(nameOf(m))}</b> is offline; its list was not read`)
+  : L(`<b>${esc(nameOf(m))}</b> 读取失败：${esc(why)}`, `Could not read <b>${esc(nameOf(m))}</b>: ${esc(why)}`)}</span><button type="button" class="sp-btn sm" data-retry="${esc(m)}"${retrying.has(m) ? " disabled" : ""}>${retrying.has(m) ? L("读取中…", "Reading…") : L("重试", "Retry")}</button></div>`).join("");
 function renderList() {
   const gs = groups();
-  const adds = segApplies();
+  // The add row goes to the machine shown (this one in 全部机器); not while that machine's list could not be read.
+  const adds = segApplies() && !unread.has(allMode() ? "" : via);
+  // A machine's answer redraws the list: what was being typed in the add row stays.
+  const typing = els.list.querySelector<HTMLInputElement>("#add-input");
+  const typed = typing && !typing.disabled ? typing.value : "";
+  const focused = !!typing && document.activeElement === typing;
+  const banners = unreadHtml();
   const addRow = adds ? `<label class="add-row"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="sp-sr">${L("新建待办", "New todo")}</span><input id="add-input" placeholder="${esc(addHint())}" maxlength="300" autocomplete="off"></label>` : "";
+  if (!gs.length && waiting.size) {
+    els.list.innerHTML = `${banners}<div class="sp-state"><span class="ico" aria-hidden="true">${svg("layers")}</span><b>${L("读取中…", "Reading…")}</b><p>${esc([...waiting].map(nameOf).map((x) => x || L("本机", "This machine")).join(L("、", ", ")))}</p></div>`;
+    bindList(typed, focused);
+    return;
+  }
+  if (!gs.length && banners && !answers.size) {
+    els.list.innerHTML = banners + addRow;
+    bindList(typed, focused);
+    return;
+  }
   if (!gs.length) {
     const hint = query ? L(`没有和「${esc(query)}」匹配的任务。`, `No task matches “${esc(query)}”.`)
       : seg === "doing" && adds ? L("没有进行中的任务。", "Nothing in progress.")
@@ -500,14 +557,14 @@ function renderList() {
       : view === "upcoming" ? L("接下来几天没有安排。", "Nothing planned for the next days.")
       : view === "done" ? L("还没有完成的任务。", "Nothing finished yet.")
       : L("清单是空的。在右边写点什么，让 AI 拆成任务。", "The list is empty. Write something on the right and the AI turns it into tasks.");
-    els.list.innerHTML = `<div class="sp-state"><span class="ico" aria-hidden="true">${svg(query ? "search" : "check")}</span><b>${query ? L("没有结果", "No results") : view === "done" || view === "review" ? L("空", "Empty") : L("轻松", "All clear")}</b><p>${hint}</p></div>${addRow}`;
-    bindAdd();
+    els.list.innerHTML = `${banners}<div class="sp-state"><span class="ico" aria-hidden="true">${svg(query ? "search" : "check")}</span><b>${query ? L("没有结果", "No results") : view === "done" || view === "review" ? L("空", "Empty") : L("轻松", "All clear")}</b><p>${hint}</p></div>${addRow}`;
+    bindList(typed, focused);
     return;
   }
   const total = gs.reduce((s, g) => s + g.items.reduce((n, t) => n + 1 + (kids.get(keyOf(t.id, t.m))?.length ?? 0), 0), 0);
   // The done list pages: how much of it is shown, and the next page. Elsewhere the count is in the left column already.
   const foot = view === "done" ? `<div class="list-foot">${doneCursors.size ? `<button type="button" class="sp-btn sm" id="load-more">${L("加载更多", "Load more")}</button>` : ""}<span>${L(`已显示 ${total} / ${doneTotal} 项`, `Showing ${total} of ${doneTotal}`)}</span></div>` : "";
-  els.list.innerHTML = `<div class="cols" aria-hidden="true"><span></span><span>${L("待办", "Todo")}</span><span>${L("截止", "Due")}</span><span>${L("优先", "Priority")}</span><span class="c-proj-h">${L("项目", "Project")}</span><span>${L("状态", "State")}</span></div>`
+  els.list.innerHTML = `${banners}<div class="cols" aria-hidden="true"><span></span><span>${L("待办", "Todo")}</span><span>${L("截止", "Due")}</span><span>${L("优先", "Priority")}</span><span class="c-proj-h">${L("项目", "Project")}</span><span>${L("状态", "State")}</span></div>`
     + gs.map((g) => `
     <div class="grp" role="group" aria-label="${esc(g.title)}">
       <div class="sp-gh${g.late ? " late" : ""}">${g.title}<span class="n">${g.items.length}</span></div>
@@ -533,6 +590,14 @@ function renderList() {
   });
   const more = els.list.querySelector<HTMLButtonElement>("#load-more");
   if (more) more.onclick = () => void loadMore(more);
+  bindList(typed, focused);
+}
+/** What every state of the list has: the machines' 重试 and the add row, with what was being typed in it. */
+function bindList(typed: string, focused: boolean) {
+  els.list.querySelectorAll<HTMLButtonElement>("[data-retry]").forEach((b) => { b.onclick = () => retryMachine(b.dataset.retry ?? ""); });
+  const input = els.list.querySelector<HTMLInputElement>("#add-input");
+  if (input && typed) input.value = typed;
+  if (input && focused) input.focus();
   bindAdd();
 }
 /** Enter in the add row creates the todo (on this machine in the all-machines view) and keeps the row ready for the next. */
@@ -601,25 +666,27 @@ function rowHtml(t: Item, nested = false): string {
  * the list is read again once the machine has it (and put back when it refused).
  */
 function showStatus(id: number, status: Status | "deleted") {
-  const m = allMode() ? detailVia : undefined;
-  const t = todos.find((x) => x.id === id && x.m === m) ?? active.find((x) => x.id === id && x.m === m);
-  if (!t) return;
+  // The change is made to its machine's answer, so the other machines' answers still coming merge with it.
+  const m = at();
+  const ans = answers.get(m);
+  const act = ans && (ans.a ?? ans.r).todos;
+  const t = ans && (ans.r.todos.find((x) => x.id === id) ?? act!.find((x) => x.id === id));
+  if (!ans || !t) return;
   // A read already on its way has the state from before: it is dropped, the read after the change draws.
   loadSeq++;
-  const r = moveRow({ counts, active, tags, projects }, t, status, scopeOf(statusOf(view)));
-  ({ counts, active, tags, projects } = r);
-  const mc = machines.find((x) => x.via === (t.m ?? via));
-  if (mc && mc.active !== null) mc.active = Math.max(0, mc.active + r.activeDelta);
+  waiting.clear();
+  const r = moveRow({ counts: ans.r.counts, active: act!, tags: ans.r.tags, projects: ans.r.projects }, t, status, scopeOf(statusOf(view)));
+  let rows = ans.r.todos;
   for (const x of r.moved) {
-    const row = todos.find((y) => y.id === x.id && y.m === x.m);
+    const row = rows.find((y) => y.id === x.id);
     if (!row) continue;
-    if (x.status === null) todos = todos.filter((y) => y !== row);
+    if (x.status === null) rows = rows.filter((y) => y !== row);
     else if (x.status !== row.status) { row.status = x.status as Status; row.doneAt = x.status === "done" ? new Date().toISOString() : null; }
   }
-  renderMachines();
-  renderSide();
-  renderKpis();
-  renderList();
+  answers.set(m, { r: { ...ans.r, todos: rows, counts: r.counts ?? ans.r.counts, tags: r.tags, projects: r.projects }, a: { todos: r.active }, w: ans.w });
+  const mc = machines.find((x) => x.via === m);
+  if (mc && mc.active !== null) mc.active = Math.max(0, mc.active + r.activeDelta);
+  draw();
 }
 async function setStatus(id: number, status: Status) {
   showStatus(id, status);
@@ -1292,7 +1359,11 @@ const move = { dialog: $<HTMLDialogElement>("#move-ask"), to: $<HTMLSelectElemen
 $("#d-move").onclick = () => {
   if (!cur) return;
   const from = at();
-  move.to.innerHTML = machines.filter((x) => x.via !== from).map((x) => `<option value="${esc(x.via)}">${esc(x.name)}</option>`).join("");
+  // An offline machine is listed but cannot be picked: the move would wait for it.
+  const targets = machines.filter((x) => x.via !== from);
+  move.to.innerHTML = targets.map((x) => `<option value="${esc(x.via)}"${x.online ? "" : " disabled"}>${esc(x.name)}${x.online ? "" : L("（离线）", " (offline)")}</option>`).join("");
+  move.to.value = targets.find((x) => x.online)?.via ?? "";
+  move.start.disabled = !targets.some((x) => x.online);
   move.hint.textContent = L(
     `现在在 ${nameOf(from)}。备注、方案、子任务、操作记录和图片一起转移；方案的旧版本、历史和 AI 执行记录留在原机器。`,
     `It is on ${nameOf(from)} now. Notes, plan, subtasks, records and pictures move with it; the plan's older versions, the history and the AI runs stay on that machine.`);
@@ -1677,29 +1748,44 @@ $("#ai-close").onclick = closeDrawers;
 $("#menu").onclick = () => openDrawer("sp-open-nav");
 
 // ---- machines
-/** This machine and the peers running ai-todo (a hub has them), each with its open count. */
+/**
+ * This machine and the peers running ai-todo (a hub has them), shown as soon as the hub names them; each
+ * one's open count fills in as it answers. An offline peer (ai-space's `health`) is not asked, and neither is
+ * a machine the list being read already asks. Returns once the machines are known, not their counts.
+ */
 async function loadMachines() {
-  const m = await fetch("/api/machines").then((r) => r.json() as Promise<{ local: string; peers: string[] }>, () => ({ local: "", peers: [] as string[] }));
-  const list = ["", ...(m.peers ?? [])];
-  machines = await Promise.all(list.map(async (v): Promise<Machine> => {
-    const path = `/api/todos?status=active&fields=list&limit=1`;
-    try {
-      const r = await fetch(v ? `/api/m/${encodeURIComponent(v)}${path}` : path);
-      const b = (await r.json()) as ListAnswer & { error?: string };
-      return { via: v, name: v || m.local || L("本机", "This machine"), active: r.ok ? b.counts.active : null, error: r.ok ? null : b.error ?? `HTTP ${r.status}` };
-    } catch (e) { return { via: v, name: v || m.local || L("本机", "This machine"), active: null, error: (e as Error).message }; }
-  }));
-  if (allMode() ? machines.length < 2 : !machines.some((x) => x.via === via)) { via = ""; syncUrl(); }
+  type Health = { name: string; online: boolean; asOf?: string };
+  const m = await fetch("/api/machines").then((r) => r.json() as Promise<{ local: string; peers: string[]; peerHealth?: Health[] }>, () => ({ local: "", peers: [] as string[], peerHealth: [] as Health[] }));
+  // An older version answers no peerHealth: every peer counts as online.
+  const health = new Map((m.peerHealth ?? []).map((h) => [h.name, h]));
+  const chatBefore = chatVia();
+  machines = ["", ...(m.peers ?? [])].map((v): Machine => {
+    const h = health.get(v);
+    const old = machines.find((x) => x.via === v);
+    return { via: v, name: v || m.local || L("本机", "This machine"), online: h?.online !== false, ...(h?.asOf ? { asOf: h.asOf } : {}), active: answers.get(v)?.r.counts.active ?? old?.active ?? null, error: old?.error ?? null };
+  });
+  if (allMode() ? machines.length < 2 : !machines.some((x) => x.via === via)) { via = ""; syncUrl(); void load(); }
+  // The machine shown turned out offline before its list came: say so; a late answer still replaces it.
+  else if (!allMode() && offline(via) && !answers.has(via)) { unread.set(via, null); renderList(); }
   renderMachines();
+  if (chatVia() !== chatBefore) void mountChat();
+  const counted = (v: string) => allMode() || v === via;
+  for (const x of machines) {
+    if (!x.online || counted(x.via)) continue;
+    api<ListAnswer>("/api/todos?status=active&fields=list&limit=1", {}, x.via).then(
+      (b) => { x.active = b.counts.active; x.error = null; },
+      (e) => { x.error = (e as Error).message; },
+    ).finally(renderMachines);
+  }
 }
 function renderMachines() {
   const nav = $("#machines");
   const many = machines.length > 1;
   $("#m-group").hidden = !many;
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
-  // A machine that did not answer keeps its row, with a red dot and the reason in the title.
+  // A machine that did not answer keeps its row, with a red dot and the reason in the title; an offline one a hollow dot.
   renderAiMachine();
-  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
+  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(!x.online ? L(`离线${x.asOf ? `，最后在线 ${new Date(x.asOf).toLocaleString()}` : ""}`, `Offline${x.asOf ? `, last seen ${new Date(x.asOf).toLocaleString()}` : ""}`) : x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${!x.online ? `<span class="sp-dot none" aria-hidden="true"></span>${L("离线", "offline")}` : x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
 }
 /** The AI panel's machine menu: follow the list, or one machine whatever the list shows. Hidden with one machine. */
 function renderAiMachine() {
@@ -1735,13 +1821,17 @@ $("#machines").addEventListener("click", (e) => {
 });
 
 // ---- boot
+// The machine list, the list and the AI panel start together: the list needs only the machine shown (the
+// address or the last pick), and loadMachines falls back to this machine when that one is not listed. 全部机器
+// needs the machines first.
 (async () => {
-  await loadMachines();
-  await load();
+  const listed = loadMachines();
+  const shown = allMode() ? listed.then(() => (allMode() ? load() : undefined)) : load();
   void mountChat();
   const params = new URLSearchParams(location.search);
   const wanted = Number(params.get("todo"));
   const wantedAt = params.get("at") ?? "";
+  await Promise.all([listed, shown]);
   if (allMode() && machines.some((x) => x.via === wantedAt)) detailVia = wantedAt;
   if (wanted) await openDetail(wanted);
 })();
