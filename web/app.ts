@@ -268,6 +268,7 @@ function draw() {
   renderHead();
   renderKpis();
   renderList();
+  if (!waiting.size && answers.size) numsStill = false;
 }
 /** Ask one machine for the view; its answer (or why there is none) is drawn at once, unless a newer load started. */
 async function readInto(seq: number, m: string) {
@@ -301,6 +302,7 @@ async function load() {
   for (const m of ask) if (offline(m)) { answers.delete(m); unread.set(m, null); }
   waiting.clear();
   for (const m of asking) waiting.add(m);
+  markBusy();
   if (asking.length < ask.length) draw();
   await Promise.all(asking.map((m) => readInto(seq, m)));
   if (seq === loadSeq) void checkRuns();
@@ -356,16 +358,20 @@ const setView = (v: View) => { view = v; syncUrl(); };
 const isToday = (t: Item) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
 function renderSide() {
   const today = todayStr();
+  // 今天's calendar carries the day of the month.
+  $("#today-day").textContent = String(Number(today.slice(8, 10)));
   const late = active.filter(isLate).length;
   const n = { today: active.filter(isToday).length, upcoming: active.filter((t) => t.due && dayOf(t.due) > today).length, all: active.length };
-  /** A count in the left column; a state (late, waiting for acceptance) adds a dot with its word in the title. */
+  /** A count in the left column; a state waiting for the person adds a dot with its word in the title. */
   const count = (sel: string, v: number, dot = "", word = "") => {
     const c = $(sel);
-    c.innerHTML = v ? `${dot ? `<span class="sp-dot ${dot}" aria-hidden="true"></span>` : ""}${v}` : "";
+    c.innerHTML = v ? `${dot ? `<span class="sp-dot ${dot}" aria-hidden="true"></span>` : ""}${numHtml(sel, v)}` : numHtml(sel, v);
     c.title = word;
     if (word) c.setAttribute("aria-label", L(`${v}，${word}`, `${v}, ${word}`)); else c.removeAttribute("aria-label");
   };
-  count("#n-today", n.today, late ? "bad" : "", late ? L(`${late} 项已过期`, `${late} overdue`) : "");
+  // 今天 wears a pill, red while something is overdue.
+  count("#n-today", n.today, "", late ? L(`${late} 项已过期`, `${late} overdue`) : "");
+  $("#n-today").classList.toggle("late", late > 0);
   count("#n-upcoming", n.upcoming);
   count("#n-all", n.all);
   // Every stage's size, whatever view is open; finished work waiting for the person stands out.
@@ -373,15 +379,106 @@ function renderSide() {
   count("#n-deferred", counts?.deferred ?? 0);
   count("#n-done", counts?.done ?? 0);
   document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view && !filterProject && !filterTag)));
-  const items = (list: { key: string; n: number }[], on: string | null) =>
-    list.length ? list.map((x) => `<li><button type="button" class="sp-nitem" data-key="${esc(x.key)}" aria-pressed="${on === x.key}"><span class="nl">${esc(x.key)}</span><span class="sp-nc">${x.n}</span></button></li>`).join("") : `<li class="none">${L("无", "None")}</li>`;
-  $("#projects").innerHTML = items(projects.map((p) => ({ key: p.project, n: p.n })), filterProject);
-  $("#tags").innerHTML = items(tags.map((t) => ({ key: t.tag, n: t.n })), filterTag);
+  const items = (kind: "folder" | "hash", list: { key: string; n: number }[], on: string | null) =>
+    list.length ? list.map((x) => `<li><button type="button" class="sp-nitem" data-key="${esc(x.key)}" aria-pressed="${on === x.key}">${navIcon(kind)}<span class="nl">${esc(x.key)}</span><span class="sp-nc">${numHtml(`${kind}:${x.key}`, x.n)}</span></button></li>`).join("") : `<li class="none">${L("暂无", "None yet")}</li>`;
+  $("#projects").innerHTML = items("folder", projects.map((p) => ({ key: p.project, n: p.n })), filterProject);
+  $("#tags").innerHTML = items("hash", tags.map((t) => ({ key: t.tag, n: t.n })), filterTag);
   $("#project-list").innerHTML = projects.map((p) => `<option value="${esc(p.project)}">`).join("");
   $("#projects").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterProject = filterProject === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
   $("#tags").querySelectorAll<HTMLElement>("[data-key]").forEach((c) => { c.onclick = () => { filterTag = filterTag === c.dataset.key ? null : c.dataset.key!; closeDrawers(); void load(); }; });
+  if (tickDone) {
+    tickDone = false;
+    const tick = $("#side .tick");
+    tick.classList.remove("draw");
+    void tick.getBoundingClientRect();
+    tick.classList.add("draw");
+  }
+  placeInd();
 }
-document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => { b.onclick = () => { setView(b.dataset.view as View); closeDrawers(); void load(); }; });
+document.querySelectorAll<HTMLElement>(".sp-nitem[data-view]").forEach((b) => { b.onclick = () => { stillNums(); setView(b.dataset.view as View); closeDrawers(); void load(); }; });
+
+/** A row's 16px line icon in the left column. */
+const navIcon = (name: keyof typeof ICON) => `<svg class="ic ni" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
+
+/**
+ * A count that rolls one line when its number changes: the old one leaves upward as the new one follows it in
+ * (downward for a smaller number). The lists are redrawn whole and often, so a roll under way is resumed at
+ * the point it had reached (`--roll-at`), not started again. Numbers that change because another list is being
+ * read (a view, a machine, the first load) are set without a roll: `numsStill`.
+ */
+const ROLL_MS = 200;
+const nums = new Map<string, { v: number; prev: number; at: number }>();
+let numsStill = true;
+const stillNums = () => { numsStill = true; };
+function numHtml(key: string, v: number): string {
+  const now = performance.now();
+  let s = nums.get(key);
+  if (!s) nums.set(key, s = { v, prev: v, at: -ROLL_MS });
+  else if (s.v !== v) nums.set(key, s = { v, prev: s.v, at: numsStill ? -ROLL_MS : now });
+  if (!v) return "";
+  const gone = now - s.at;
+  if (gone >= ROLL_MS) return `<span class="num"><span>${v}</span></span>`;
+  return `<span class="num roll${v < s.prev ? " down" : ""}" data-prev="${s.prev || ""}" style="--roll-at:-${Math.round(gone)}ms"><span>${v}</span></span>`;
+}
+/** Set by a task finished on this page: the next draw of the left column draws 已完成's tick. */
+let tickDone = false;
+
+/**
+ * The wash behind the selected list: one element that slides to the row chosen. It lies under the rows of the
+ * scrolling part and is placed from the row's box; machines (the scope) and rows in a folded group take none.
+ */
+const sideScroll = $(".sp-side-scroll");
+const navInd = document.createElement("div");
+navInd.className = "nav-ind snap";
+navInd.setAttribute("aria-hidden", "true");
+sideScroll.prepend(navInd);
+function placeInd(slide = true) {
+  const row = [...sideScroll.querySelectorAll<HTMLElement>('.sp-nitem[aria-pressed="true"]')].find((b) => !b.closest("#machines"));
+  sideScroll.querySelectorAll(".ind-on").forEach((x) => { if (x !== row) x.classList.remove("ind-on"); });
+  const box = row?.getBoundingClientRect();
+  if (!row || !box || box.height < 8 || row.closest(".sp-ngroup.closed")) {
+    row?.classList.remove("ind-on");
+    navInd.classList.add("snap");
+    navInd.style.opacity = "0";
+    return;
+  }
+  const home = sideScroll.getBoundingClientRect();
+  // The first placing, and one that follows a layout change (a group folding, a resize), does not slide.
+  navInd.classList.toggle("snap", !slide || navInd.style.opacity !== "1");
+  navInd.style.width = `${box.width}px`;
+  navInd.style.height = `${box.height}px`;
+  navInd.style.transform = `translate(${box.left - home.left + sideScroll.scrollLeft}px, ${box.top - home.top + sideScroll.scrollTop}px)`;
+  navInd.style.opacity = "1";
+  row.classList.add("ind-on");
+}
+// Rows move when a group folds, a list above grows or the column is resized: the wash keeps to its row.
+const navWatch = new ResizeObserver(() => placeInd(false));
+sideScroll.querySelectorAll(".sp-ngroup").forEach((g) => navWatch.observe(g));
+navWatch.observe(sideScroll);
+
+// Folding a group: its label is the switch; which ones are folded is kept in this browser.
+{
+  const KEY = "todo-side-folded";
+  let folded: string[] = [];
+  try { const v: unknown = JSON.parse(localStorage.getItem(KEY) ?? "[]"); if (Array.isArray(v)) folded = v.filter((x): x is string => typeof x === "string"); } catch { /* private mode, or not a list */ }
+  const set = (g: HTMLElement, closed: boolean) => {
+    g.classList.toggle("closed", closed);
+    g.querySelector(".ng-toggle")!.setAttribute("aria-expanded", String(!closed));
+    g.querySelector<HTMLElement>(".ng-body")!.inert = closed;
+  };
+  sideScroll.classList.add("booting");
+  sideScroll.querySelectorAll<HTMLElement>(".sp-ngroup[data-group]").forEach((g) => {
+    const key = g.dataset.group!;
+    if (folded.includes(key)) set(g, true);
+    g.querySelector<HTMLElement>(".ng-toggle")!.onclick = () => {
+      const closed = !g.classList.contains("closed");
+      set(g, closed);
+      folded = closed ? [...folded, key] : folded.filter((x) => x !== key);
+      try { localStorage.setItem(KEY, JSON.stringify(folded)); } catch { /* private mode */ }
+    };
+  });
+  requestAnimationFrame(() => requestAnimationFrame(() => sideScroll.classList.remove("booting")));
+}
 
 // ---- header and toolbar
 const longDay = (d = new Date()) => (EN ? `${WEEKDAY[d.getDay()]}, ${d.toLocaleDateString("en", { month: "short", day: "numeric" })}` : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAY[d.getDay()]}`);
@@ -528,6 +625,7 @@ const unreadHtml = () => [...unread].map(([m, why]) => `<div class="sp-banner wa
   ? L(`<b>${esc(nameOf(m))}</b> 离线，没有去读它的清单`, `<b>${esc(nameOf(m))}</b> is offline; its list was not read`)
   : L(`<b>${esc(nameOf(m))}</b> 读取失败：${esc(why)}`, `Could not read <b>${esc(nameOf(m))}</b>: ${esc(why)}`)}</span><button type="button" class="sp-btn sm" data-retry="${esc(m)}"${retrying.has(m) ? " disabled" : ""}>${retrying.has(m) ? L("读取中…", "Reading…") : L("重试", "Retry")}</button></div>`).join("");
 function renderList() {
+  markBusy();
   const gs = groups();
   // The add row goes to the machine shown (this one in 全部机器); not while that machine's list could not be read.
   const adds = segApplies() && !unread.has(allMode() ? "" : via);
@@ -676,6 +774,7 @@ function showStatus(id: number, status: Status | "deleted") {
   loadSeq++;
   waiting.clear();
   const r = moveRow({ counts: ans.r.counts, active: act!, tags: ans.r.tags, projects: ans.r.projects }, t, status, scopeOf(statusOf(view)));
+  if (status === "done") tickDone = true;
   let rows = ans.r.todos;
   for (const x of r.moved) {
     const row = rows.find((y) => y.id === x.id);
@@ -1805,7 +1904,17 @@ function renderMachines() {
   const total = machines.reduce((s, x) => s + (x.active ?? 0), 0);
   // A machine that did not answer keeps its row, with a red dot and the reason in the title; an offline one a hollow dot.
   renderAiMachine();
-  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}"><span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${total || ""}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(!x.online ? L(`离线${x.asOf ? `，最后在线 ${new Date(x.asOf).toLocaleString()}` : ""}`, `Offline${x.asOf ? `, last seen ${new Date(x.asOf).toLocaleString()}` : ""}`) : x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="nl">${esc(x.name)}${x.via ? "" : L("（本机）", " (this one)")}</span><span class="sp-nc">${!x.online ? `<span class="sp-dot none" aria-hidden="true"></span>${L("离线", "offline")}` : x.error ? `<span class="sp-dot bad" aria-hidden="true"></span>${L("失败", "failed")}` : x.active ? String(x.active) : ""}</span></button></li>`).join("");
+  const state = (x: Machine) => (!x.online ? "off" : x.error ? "bad" : "on");
+  const word = (x: Machine) => (!x.online ? L("离线", "offline") : x.error ? L("读取失败", "could not be read") : L("在线", "online"));
+  nav.innerHTML = `<li><button type="button" class="sp-nitem" data-machine="${ALL}" aria-pressed="${allMode()}">${navIcon("layers")}<span class="nl">${L("全部机器", "All machines")}</span><span class="sp-nc">${numHtml("m:*", total)}</span></button></li>` + machines.map((x) => `<li><button type="button" class="sp-nitem" data-machine="${esc(x.via)}" aria-pressed="${x.via === via}" title="${esc(!x.online ? L(`离线${x.asOf ? `，最后在线 ${new Date(x.asOf).toLocaleString()}` : ""}`, `Offline${x.asOf ? `, last seen ${new Date(x.asOf).toLocaleString()}` : ""}`) : x.error ? L(`读取失败：${x.error}`, `Could not read: ${x.error}`) : "")}"><span class="mdot ${state(x)}${machineBusy(x.via) ? " busy" : ""}" role="img" aria-label="${word(x)}"><i></i></span><span class="nl mname"><span class="nm">${esc(x.name)}</span>${x.via ? "" : `<span class="mtag">${L("本机", "this one")}</span>`}</span>${!x.online ? `<span class="sp-nc off">${L("离线", "offline")}</span>` : x.error ? `<span class="sp-nc bad">${L("失败", "failed")}</span>` : `<span class="sp-nc">${numHtml(`m:${x.via}`, x.active ?? 0)}</span>`}</button></li>`).join("");
+}
+/** A machine is busy while the page waits for its list or one of its tasks is being run by the AI: its dot breathes. */
+const machineBusy = (v: string) => waiting.has(v) || retrying.has(v) || [...aiRuns.keys()].some((k) => k.startsWith(`${v}#`));
+/** The dots follow what the machines are doing without the section being redrawn (the list is drawn on every such change). */
+function markBusy() {
+  document.querySelectorAll<HTMLElement>("#machines [data-machine] .mdot").forEach((d) => {
+    d.classList.toggle("busy", machineBusy(d.closest<HTMLElement>("[data-machine]")!.dataset.machine ?? ""));
+  });
 }
 /** The AI panel's machine menu: follow the list, or one machine whatever the list shows. Hidden with one machine. */
 function renderAiMachine() {
@@ -1826,6 +1935,7 @@ $<HTMLSelectElement>("#ai-machine").onchange = (e) => {
 $("#machines").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-machine]");
   if (!b || b.dataset.machine === via) return;
+  stillNums();
   via = b.dataset.machine ?? "";
   detailVia = "";
   try { if (via) localStorage.setItem("todo-machine", via); else localStorage.removeItem("todo-machine"); } catch { /* private mode */ }
