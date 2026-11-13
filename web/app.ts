@@ -684,6 +684,8 @@ function renderList() {
       pick();
       void (inReview && on ? verdict(id, "accept") : setStatus(id, on ? "done" : "open"));
     };
+    // 开始做 / 返回待办, as in the detail: in progress counts under 今天, so setStatus redraws the left column too.
+    row.querySelector<HTMLElement>("[data-op=start]")?.addEventListener("click", () => { pick(); void setStatus(id, row.classList.contains("doing") ? "open" : "doing"); });
     row.querySelector<HTMLElement>("[data-op=run]")?.addEventListener("click", () => void open(true));
     row.querySelector<HTMLElement>("[data-op=edit]")?.addEventListener("click", () => void open());
     row.querySelector<HTMLElement>("[data-op=accept]")?.addEventListener("click", () => { pick(); void verdict(id, "accept"); });
@@ -759,7 +761,7 @@ function rowHtml(t: Item, nested = false): string {
     <div class="c-pri">${pri}</div>
     <div class="c-proj">${t.project ? esc(t.project) : `<span class="dash">—</span>`}</div>
     <div class="c-st">${statusHtml(t, late)}${review ? `<span class="verdict"><button type="button" class="sp-btn sm" data-op="accept" title="${L("验收通过，标为完成", "Accept and mark done")}">${L("通过", "Accept")}</button><button type="button" class="sp-btn ghost sm" data-op="reject" title="${L("验收不通过，写明原因后退回", "Not accepted: say why and send it back")}">${L("退回", "Send back")}</button></span>` : ""}</div>
-    ${review ? "" : `<div class="ops"><button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行：先选仅调研还是写代码，以及权限", "Hand it to an AI agent: choose research or code, and what it may do")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
+    ${review ? "" : `<div class="ops">${t.status === "open" || t.status === "doing" ? `<button type="button" class="sp-btn sm" data-op="start" title="${t.status === "doing" ? L("不再进行中，放回待办", "No longer in progress: put it back to open") : L("标为进行中", "Mark it in progress")}">${t.status === "doing" ? L("返回待办", "Back to open") : L("开始做", "Start")}</button>` : ""}<button type="button" class="sp-btn sm" data-op="run" title="${L("交给 AI 智能体执行：先选仅调研还是写代码，以及权限", "Hand it to an AI agent: choose research or code, and what it may do")}"><span class="spark" aria-hidden="true">✦</span>${L("执行", "Run")}</button><button type="button" class="sp-btn sm" data-op="edit">${L("详情", "Open")}</button></div>`}
   </div>`;
 }
 /**

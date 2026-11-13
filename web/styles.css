@@ -202,7 +202,7 @@ body.modal-open { overflow:hidden }
   .todo .c-st { grid-area:st;flex-wrap:wrap }
   .todo .c-due:has(.dash),.todo .c-pri:has(.dash) { display:none }
   .todo .ops { grid-area:ops;position:static;transform:none;background:none;padding:0;opacity:1;pointer-events:auto }
-  .todo .ops [data-op=edit] { display:none }
+  .todo .ops [data-op=edit],.todo .ops [data-op=start] { display:none }
   .todo.sub { padding-left:28px }
   .todo.sub::before { left:14px }
   .grp .sp-gh { padding:12px 12px 2px 16px }
