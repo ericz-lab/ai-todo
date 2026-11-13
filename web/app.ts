@@ -538,7 +538,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- the stats tile: today, overdue and the week's completions (the trend) in one slim tile
+// ---- the stats tile: today, overdue and the week's completions (the trend), three columns of label, figure and notes
 function renderKpis() {
   const today = todayStr();
   const todayN = active.filter(isToday);
@@ -552,21 +552,24 @@ function renderKpis() {
   const label = (text: string) => `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${text}</span>`;
   const fig = (v: string) => `<span class="sp-fig">${v}</span>${EN ? "" : `<span class="sp-unit">项</span>`}`;
   const todayTitle = L(`今天到期 ${dueToday} 项 · ${doing ? `进行中 ${doing} 项` : "没有进行中"}`, `${dueToday} due today · ${doing ? `${doing} in progress` : "nothing in progress"}`);
-  const todayStat = `<div class="stat st-today" title="${esc(todayTitle)}">${label(L("今天", "Today"))}${fig(String(todayN.length))}
+  const todayStat = `<div class="stat st-today" title="${esc(todayTitle)}">${label(L("今天", "Today"))}<div class="st-val">${fig(String(todayN.length))}</div>
       <span class="sp-meter" role="img" aria-label="${esc(L(`今天完成 ${doneToday} 项`, `${doneToday} done today`))}"><i style="--v:${share}%"></i></span>
-      <span class="st-note">${L(`${doneToday} 已完成`, `${doneToday} done`)}</span><span class="st-note st-more">${L(`到期 ${dueToday} · ${doing ? `进行中 ${doing}` : "没有进行中"}`, `Due ${dueToday} · ${doing ? `in progress ${doing}` : "nothing in progress"}`)}</span></div>`;
-  // Overdue is a state, so it is a badge with its word: the count and the earliest one; nothing late, a quiet note.
-  const lateStat = late.length
-    ? `<div class="stat st-late"><span class="sp-badge bad st-first" title="${L("最早：", "Earliest: ")}${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}"><span class="tx">${L(`已过期 ${late.length} 项 · 最早`, `${late.length} overdue · earliest`)} ${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}</span></span></div>`
-    : `<div class="stat st-late st-more"><span class="st-note">${L("没有逾期任务", "Nothing overdue")}</span></div>`;
+      <div class="st-notes"><span class="st-note">${L(`${doneToday} 已完成`, `${doneToday} done`)}</span><span class="st-note st-more">${L(`到期 ${dueToday} · ${doing ? `进行中 ${doing}` : "没有进行中"}`, `Due ${dueToday} · ${doing ? `in progress ${doing}` : "nothing in progress"}`)}</span></div></div>`;
+  // Overdue is a state: its count, then the earliest one as a badge with its word; nothing late, a quiet note.
+  const lateStat = `<div class="stat st-late">${label(L("已过期", "Overdue"))}<div class="st-val">${fig(String(late.length))}</div>
+      <div class="st-notes">${late.length
+        ? `<span class="sp-badge bad st-first" title="${L("最早：", "Earliest: ")}${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}"><span class="tx">${L("最早", "Earliest")} ${esc(late[0]!.title)} · ${esc(fmtDue(late[0]!.due!))}</span></span>`
+        : `<span class="st-note">${L("没有逾期任务", "Nothing overdue")}</span>`}</div></div>`;
   $("#kpis").innerHTML = `<div class="stats-in">${todayStat}${lateStat}${weekStat(done)}</div>`;
 }
+/** The tallest day's bar in the week chart, in px (the chart's day column in styles.css leaves room for it and the label). */
+const WEEK_BAR = 40;
 /** The week's completions: the figure, then one bar a day with its day under it (today in the accent). */
 function weekStat(done: number | null): string {
   const head = `<span class="sp-tt st-label"><span class="sp-sq" aria-hidden="true"></span>${L("近 7 天完成", "Done, last 7 days")}</span>`;
-  if (!trend || done === null) return `<div class="stat st-week">${head}<span class="sp-fig">–</span><span class="st-note">${L("完成记录读取失败", "Could not read completions")}</span></div>`;
+  if (!trend || done === null) return `<div class="stat st-week">${head}<div class="st-val"><span class="sp-fig">–</span></div><div class="st-notes"><span class="st-note">${L("完成记录读取失败", "Could not read completions")}</span></div></div>`;
   // A machine that has finished nothing has no trend block at all: zero, not a crash.
-  if (!trend.length) return `<div class="stat st-week">${head}<span class="sp-fig">0</span>${EN ? "" : `<span class="sp-unit">项</span>`}<span class="st-note">${L("这 7 天还没有完成的任务", "Nothing finished in the last 7 days")}</span></div>`;
+  if (!trend.length) return `<div class="stat st-week">${head}<div class="st-val"><span class="sp-fig">0</span>${EN ? "" : `<span class="sp-unit">项</span>`}</div><div class="st-notes"><span class="st-note">${L("这 7 天还没有完成的任务", "Nothing finished in the last 7 days")}</span></div></div>`;
   const max = Math.max(1, ...trend.map((p) => p.v ?? 0));
   const best = trend.reduce((a, p) => ((p.v ?? 0) > (a.v ?? 0) ? p : a), trend[0]!);
   const md = (t: string) => `${Number(t.slice(5, 7))}/${Number(t.slice(8, 10))}`;
@@ -577,10 +580,10 @@ function weekStat(done: number | null): string {
     : L(`这 7 天完成了 ${done} 项，${bestDay} 最多，${best.v} 项。${lateN ? `还有 ${lateN} 项过期没处理。` : ""}`,
       `${done} done in the last 7 days, the most on ${bestDay} (${best.v}).${lateN ? ` ${lateN} overdue still waiting.` : ""}`);
   const last = trend.length - 1;
-  return `<div class="stat st-week" title="${esc(text)}">${head}<span class="sp-fig">${done}</span>${EN ? "" : `<span class="sp-unit">项</span>`}
+  return `<div class="stat st-week" title="${esc(text)}">${head}<div class="st-val"><span class="sp-fig">${done}</span>${EN ? "" : `<span class="sp-unit">项</span>`}
       <div class="week" role="img" aria-label="${esc(text)} ${L("每天：", "Per day: ")}${trend.map((p) => L(`${md(p.t)} ${p.v ?? 0} 项`, `${md(p.t)} ${p.v ?? 0}`)).join(L("，", ", "))}">
-        ${trend.map((p, i) => `<span class="day" title="${L(`${md(p.t)}：完成 ${p.v ?? 0} 项`, `${md(p.t)}: ${p.v ?? 0} done`)}"><i class="b${i === last ? " now" : ""}" style="--h:${Math.max(2, Math.round(((p.v ?? 0) / max) * 24))}px"></i><small>${i === last && !EN ? "今" : wd(p.t)}</small></span>`).join("")}
-      </div><span class="st-note st-more">${L("日均", "Daily mean")} ${(done / 7).toFixed(1)}</span></div>`;
+        ${trend.map((p, i) => `<span class="day" title="${L(`${md(p.t)}：完成 ${p.v ?? 0} 项`, `${md(p.t)}: ${p.v ?? 0} done`)}"><i class="b${i === last ? " now" : ""}" style="--h:${Math.max(2, Math.round(((p.v ?? 0) / max) * WEEK_BAR))}px"></i><small>${i === last && !EN ? "今" : wd(p.t)}</small></span>`).join("")}
+      </div></div><div class="st-notes"><span class="st-note">${L("日均", "Daily mean")} ${(done / 7).toFixed(1)}</span></div></div>`;
 }
 
 // ---- the list

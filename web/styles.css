@@ -111,26 +111,36 @@ body.modal-open { overflow:hidden }
 .sp-chip.filter i { font-style:normal;color:var(--muted) }
 .sp-chip.filter .ic { width:12px;height:12px;color:var(--muted) }
 
-/* ---- the stats tile: today, overdue, the week. The extra facts (due today, in progress, the daily mean) show
-   when the tile has room for them; they are in each stat's title too. */
-.stats { container-type:inline-size;padding:12px 16px }
-.stats-in { display:flex;flex-wrap:wrap;align-items:center;gap:10px 24px }
-.stat { display:flex;align-items:center;gap:8px;min-width:0 }
-.stat .sp-fig { line-height:1 }
+/* ---- the stats tile: today, overdue, the week, three columns side by side, each its label, its figure (the week's
+   with its bar chart), then a line of notes. Narrow, today and overdue share a row and the week takes the next one;
+   the in-progress fact then goes (it is in the stat's title too). */
+.stats { container-type:inline-size;padding:18px 0 }
+.stats-in { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.4fr) }
+.stat { display:flex;flex-direction:column;align-items:stretch;gap:10px;min-width:0;padding:2px 20px }
+.stat + .stat { border-left:1px solid var(--line) }
 .st-label { flex:none;white-space:nowrap }
-.st-today { flex:none }
-.st-today .sp-meter { flex:none;width:96px }
+.st-val { display:flex;align-items:flex-end;gap:6px;min-height:56px }
+.st-val .sp-fig { font-size:36px;line-height:1 }
+.st-today .sp-meter { flex:none;width:100%;max-width:220px }
+.st-notes { display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;min-width:0;min-height:24px;margin-top:auto }
 .st-note { font-size:12px;color:var(--muted);white-space:nowrap }
-/* Overdue takes what the other two leave, its badge cut with an ellipsis, so the tile stays one line on a laptop. */
-.st-late { flex:1 1 0;min-width:140px }
 .st-first { max-width:100%;min-width:0 }
 .st-first .tx { overflow:hidden;text-overflow:ellipsis;min-width:0 }
-.week { display:flex;align-items:flex-end;gap:6px;margin-left:4px }
-.week .day { display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;height:40px }
-.week .b { display:block;width:4px;height:var(--h, 2px);border-radius:var(--r-pill);background:var(--bar-fill) }
+/* the week chart, right of the figure: one bar a day (at most 40px, WEEK_BAR in app.ts) over its day */
+.week { display:flex;align-items:flex-end;justify-content:space-between;gap:6px;flex:1;max-width:260px;margin-left:auto;padding-left:12px }
+.week .day { display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:56px;min-width:16px }
+.week .b { display:block;width:6px;height:var(--h, 2px);border-radius:var(--r-pill);background:var(--bar-fill) }
 .week .b.now { background:var(--accent) }
 .week small { font-size:12px;line-height:1;color:var(--muted) }
-@container (max-width: 900px) { .st-more { display:none } }
+@container (max-width: 560px) {
+  .stats { padding:14px 0 }
+  .stats-in { grid-template-columns:minmax(0,1fr) minmax(0,1fr);row-gap:14px }
+  .stat { padding:2px 16px }
+  .st-week { grid-column:1 / -1;border-left:0;border-top:1px solid var(--line);padding-top:14px }
+  .st-val { min-height:44px }
+  .st-val .sp-fig { font-size:30px }
+  .st-more { display:none }
+}
 
 /* ---- the list tile: one column header, the groups, the add row */
 .list { container-type:inline-size;overflow:hidden }
@@ -338,8 +348,6 @@ dialog.plan-full { width:min(760px, calc(100% - 24px));max-width:none;max-height
   .sp-head { align-items:center }
   .sp-seg { display:flex;width:100% }
   .sp-seg button { flex:1 0 auto }
-  .st-today,.st-late,.st-week { flex:1 1 100% }
-  .st-first { max-width:100% }
   .modal { padding:0 }
   .modal-card { min-height:100%;border:0;border-radius:0 }
   .d-meta { grid-template-columns:repeat(2,minmax(0,1fr)) }
