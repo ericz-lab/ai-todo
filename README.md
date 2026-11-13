@@ -2,6 +2,8 @@
 
 A todo list with an AI entry. Write what you have to do in one breath and the AI turns it into tasks with dates, priorities and tags; hand a task to the AI and it does what a model with the web can honestly do (research, draft, plan) and lists what is left for you; the chat rail reads the whole list and edits it on request.
 
+> **Works best with [ai-space](https://github.com/ericz-lab/ai-space) · 配合 ai-space 使用效果更佳.** Todo is an ai-space app: every AI feature (drafting tasks, the chat, **执行**) runs through the space's model service, and the space also gives it the panel card, notifications, image storage, nightly backups and the lists of your other machines. On its own (`bun src/index.ts`) the list, the CLI and the API work; the AI features answer 502.
+
 ## Use
 
 One AI box at the top, three uses:
@@ -88,7 +90,7 @@ to the AI about it. A task's detail there has 转移到… (Move to…): it move
 
 ## Deploy
 
-A bare repository with `deploy/post-receive` on the host (`git push seoul main`), or `DEPLOY_HOST=<ssh host> ./deploy.sh`. See [AGENTS.md](AGENTS.md) for the host details once it is live.
+A bare repository with `deploy/post-receive` on the host (`git push <machine> main`), or `DEPLOY_HOST=<ssh host> ./deploy.sh`. See [AGENTS.md](AGENTS.md#deployment).
 
 This is an [ai-space](https://github.com/ericz-lab/ai-space) app; the contract is its `docs/app-spec.md`.
 
@@ -109,3 +111,7 @@ Deferring a parent hides its active children from daily lists and AI plans witho
 CLI: `bun src/cli.ts defer <id>`, `list --deferred`, and `reopen <id>`. API: `PATCH /api/todos/:id` with `{ "status": "deferred" }` or `{ "status": "open" }`; `GET /api/todos?status=deferred` lists explicitly deferred tasks. Chat supports `op: defer` and `op: reopen`; deferred tasks and children hidden by their parent are supplied separately from active tasks and excluded from daily plans by default. Existing databases accept the new text status without a schema migration.
 
 Image storage follows ai-notes and trade-journal: `BLOB_URL=s3://bucket/prefix/` uses Bun’s S3 client with `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT` and optional `S3_REGION`; `file:///absolute/path` uses a local directory. Without `BLOB_URL`, files go under `<SPACE_APP_DATA_DIR or data>/blobs`. The manifest requests `storage.blobs: s3` from Space. Only metadata is stored in SQLite; buckets stay private and the app streams images. Records and images are retained for audit after task deletion, but their URLs become unavailable. AI context currently includes record text only, not image contents.
+
+## License
+
+[MIT](LICENSE)

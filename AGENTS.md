@@ -90,12 +90,11 @@ Every machine runs its own instance with its own list; they never sync. The hub 
 
 ## Deployment
 
-- Instances: seoul (the hub), david and thinkbook, each with its own `~/ai-todo.git` and its own data. Deploy every one: `git push <machine> main`.
-- Host of the original list: the `thinkbook` space (Local edition on a Linux laptop kept always on, `SPACE_NAME=thinkbook`), workspace `~/.ai-space`, code in `apps/ai-todo` (the bare repository's work tree, no `.git`). It is a peer of the seoul space, whose panel lists it and forwards calls to it. Moved from seoul on 2026-10-24.
-- Deploy: `git push deploy main` (remote `deploy` = `~/ai-todo.git` on that machine; its `post-receive` hook from `deploy/post-receive` runs `space app deploy ai-todo`: checkout, the manifest's checks, sync, restart only when they pass).
+- Instances: every machine that keeps a list runs its own ai-todo, with its own bare repository `~/ai-todo.git` and its own data. Each is a git remote of this checkout named after the machine; deploy every one: `git push <machine> main`. The hub is the space that has the others as peers: its panel lists them and forwards calls to them.
+- Deploy: the bare repository's `post-receive` hook from `deploy/post-receive` runs `space app deploy ai-todo`: checkout into `apps/ai-todo` (the work tree, no `.git`), the manifest's checks, sync, restart only when they pass.
 - Service: supervised by ai-space (`SPACE_SUPERVISOR=space`) as the user unit `space-ai-todo.service`, `127.0.0.1:8970`, health `GET /healthz`. Logs: `space logs ai-todo -n 50`.
-- Data: `data/ai-todo/main.db` (`DATABASE_URL` in `data/ai-todo/space.env`), pictures in R2 under `s3://my-bucket/ai-todo/` (`BLOB_URL`); the space's `ai-todo/backup` task snapshots it nightly to `s3://my-bucket/backups-thinkbook/`. Snapshots from before the move are under seoul's `backups/` prefix.
-- Public URL: `https://ai-todo.example.com/` through the space router's wildcard rule (Caddy on loopback, Cloudflare tunnel `thinkbook`), behind Cloudflare Access (`*.example.com`). The old `ai-todo.example.com` name ended with the move.
+- Data: `data/ai-todo/main.db` (`DATABASE_URL` in `data/ai-todo/space.env`), pictures under the space's S3 prefix for this app (`BLOB_URL`); the space's `ai-todo/backup` task snapshots the database nightly to the space's backup prefix.
+- Public URL: through the space router's wildcard rule, behind the operator's access control. No hostname, ssh alias, bucket or machine name belongs in this repository: keep them in the workspace environment.
 - First deploy of a new directory needs `space app sync` once (the hook's per-app sync answers 404 for an app the space has not seen).
 - Source: https://github.com/ericz-lab/ai-todo, remote `origin`.
 
