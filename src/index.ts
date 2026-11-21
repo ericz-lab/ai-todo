@@ -504,6 +504,8 @@ export function createServer(opts: ServerOptions) {
     maxRequestBodySize: 61 * 1024 * 1024,
     hostname: "127.0.0.1",
     port: opts.port ?? config.port,
+    // Bun's default, except that the bundled release (dist/index.js) always runs as production.
+    development: Bun.main.endsWith(".ts") && process.env.NODE_ENV !== "production",
     // A streamed answer can stay quiet during a long think; the keepalive keeps it under this.
     idleTimeout: 255,
     routes: {
@@ -802,6 +804,11 @@ export function createServer(opts: ServerOptions) {
         return stream ? new Response(stream, { headers: { "content-type": mimeOfKey(key), "x-content-type-options": "nosniff", "cache-control": "private, max-age=3600" } }) : fail("not found", 404);
       }
       if (url.pathname.startsWith("/space/chat/")) return proxyChat(req, url.pathname.slice("/space/chat/".length) + url.search);
+      // A bundled release (`bun run build`) serves its hashed pictures from beside the bundle; from source they are routes of the page.
+      if (req.method === "GET" && /^\/[A-Za-z0-9_-]+-[a-z0-9]{8}\.(png|svg|webp|ico|jpg)$/.test(url.pathname)) {
+        const file = Bun.file(new URL(`.${url.pathname}`, import.meta.url).pathname);
+        if (await file.exists()) return new Response(file, { headers: { "cache-control": "max-age=31536000, immutable" } });
+      }
       return new Response("not found", { status: 404 });
     },
   });
@@ -811,6 +818,8 @@ export function createServer(opts: ServerOptions) {
 }
 
 if (import.meta.main) {
+  // The bundled release (dist/index.js) finds its page's files from the working directory: run in its own.
+  if (!Bun.main.endsWith(".ts")) process.chdir(import.meta.dir);
   const db = openDb(databasePath());
   const abandoned = abandonRuns(db);
   if (abandoned) log(`closed ${abandoned} run(s) left running by the last stop`);
@@ -823,6 +832,10 @@ if (import.meta.main) {
     timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, executePermission: config.executePermission, webTools: config.web, autoReview: config.autoReview,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
+  // An installed package runs on a port ai-space picks: the CLI (the planner agent, the skill) reads it here.
+  if (process.env.SPACE_APP_DATA_DIR) {
+    await Bun.write(`${process.env.SPACE_APP_DATA_DIR}/service.port`, String(server.port)).catch((e) => log(`service.port not written: ${(e as Error).message}`));
+  }
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
       log(`${signal}, shutting down`);

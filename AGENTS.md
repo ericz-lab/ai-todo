@@ -1,6 +1,6 @@
 # ai-todo - agent guide
 
-Read this before touching code. Users read [README.md](README.md). This repository is an ai-space app; the contract is ai-space `docs/app-spec.md` (spec 1) and `space.yaml` is the only file ai-space reads.
+Read this before touching code. Users read [README.md](README.md). This repository is an ai-space app; the contract is ai-space `docs/app-spec.md` (spec 1) and `space.yaml` is the file a git deployment reads; the installation package reads `space.release.yaml` (spec 2, `docs/app-packages.md`).
 
 ## Rules
 
@@ -28,6 +28,7 @@ Read this before touching code. Users read [README.md](README.md). This reposito
 
 ```
 space.yaml           * the manifest: identity, service, agent, widget, storage
+space.release.yaml   * the package's spec-2 declaration: the same components, launch and build
 src/index.ts         * the service: routes, execution fan-out, chat proxy, boot
 src/ai.ts            * model-service client, the three prompts, answer readers (JSON array, todo-actions)
 src/db.ts            * schema, cleaning of drafts/patches, todos, plans and their versions, records and their revisions, events, runs
@@ -47,6 +48,8 @@ skills/todo/SKILL.md   the skill ai-space links into the workspace: the list fro
 deploy/app.service     user-level systemd unit template (@DIR@ substituted)
 deploy/post-receive    bare-repository hook: checkout, install, unit, restart, sync
 deploy.sh              rsync alternative to the hook
+scripts/pack.ts        the packages locally: ai-space's `space app release`
+.github/workflows/release.yml  a `v*` tag: build, sign, GitHub release, catalog pull request
 ```
 
 ## Conventions
@@ -119,4 +122,6 @@ Every machine runs its own instance with its own list; they never sync. The hub 
 
 ## Installation package
 
-`bun run pack [-- --out DIR]` builds `<name>-<version>.spaceapp` (ai-space docs/app-packages.md) from this tree without changing it; `scripts/pack.ts` explains how. `space.yaml` stays spec 1 for the git deployment; the package's spec-2 manifest is made from it, with `version` from `package.json` and the files, launch mode and offline notes from `spacePackage` there. A package runs on a port ai-space assigns: nothing may assume the manifest's port (the package's entry writes the assigned one to `<data dir>/service.port`). Machine settings of a package install go in `<workspace>/data/<app>/.env`. Bump `version` for each package released; install with `space app install`, upgrade with `space app upgrade`. A machine is served by the git deployment or by a package, never both.
+The app ships through the ai-space app catalog as a signed package (ai-space docs/app-catalog.md). `space.release.yaml` is its spec-2 declaration: `space.yaml` stays spec 1 for the git deployment, and the components of the two must be the same (`src/release.test.ts`), except the blob store, `{ backend: s3, fallback: file }` in the package so a Space without a bucket keeps pictures in its data directory. Its `build:` section says how a checkout becomes the package: `bun install --frozen-lockfile`, then `bun run build` bundles `src/index.ts` and the page into `dist/` (`dist/index.js` is the launch entry; it chdirs to its own directory and serves its hashed pictures itself); the package carries `dist`, `icon.png`, `src/cli.ts` (the planner agent's and the skill's command line, self-contained), `agents` and `skills`; the source package adds the source. It runs in `background` mode: an AI execution is detached from the page and may run for minutes.
+
+`bun run pack [-- --out DIR] [--sign-key FILE]` runs ai-space's `space app release` on this tree and writes `ai-todo-<version>.spaceapp` and `ai-todo-<version>-source.spaceapp`; the tree itself is never changed. To release: raise `version` in `space.release.yaml` and `package.json` together, commit, and push the tag `v<version>`: `.github/workflows/release.yml` builds, signs with the `SPACE_SIGN_KEY` secret, attaches both packages to the GitHub release and, with `CATALOG_TOKEN`, proposes the catalog entry. A package runs on a port ai-space assigns; the service writes it to `<data dir>/service.port` for the CLI. Machine settings of a package install (`TODO_EXECUTE_MODEL`, `TODO_LANG`, ...) go in `<workspace>/data/ai-todo/.env`. Install with `space app install ai-todo`, upgrade with `space app upgrade ai-todo`. A machine is served by the git deployment or by a package, never both.

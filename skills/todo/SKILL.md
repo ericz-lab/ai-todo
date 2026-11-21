@@ -13,7 +13,7 @@ The list lives in an ai-todo service, which may be on this machine or another co
 ## Where it is
 
 - App directory: `${SPACE_HOME:-~/.ai-space}/apps/ai-todo` (the workspace `AGENTS.md`, "This machine", names the workspace path when it differs).
-- Service: honor an explicit user target or `TODO_URL`; otherwise use `http://127.0.0.1:8970`, with the port from the app's `space.env`, `.env` or `space.yaml` when configured.
+- Service: honor an explicit user target or `TODO_URL`; otherwise use `http://127.0.0.1:8970`, with the port from the app's `space.env`, `.env` or `space.yaml` when configured. An app installed as a package runs on a port the Space picks: the service writes it to `${SPACE_HOME:-~/.ai-space}/data/ai-todo/service.port`, which the CLI reads by itself when `SPACE_APP_DATA_DIR` is set.
 - Public page: the app's `url` in `GET /api/apps/ai-todo` on the selected host's Space API (`SPACE_API_URL`, otherwise loopback with `SPACE_PORT`, default 8700); give it when the person wants to look. A public page URL is not proof that its API is reachable or authenticated.
 
 ## Find the running service

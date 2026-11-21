@@ -58,6 +58,17 @@ Another app reads the list through ai-space's bus (`POST /api/call/ai-todo/<capa
 
 `PATCH /api/todos/:id/records/:rid { content, source, expectedRevision? }` edits one (409 when edited meanwhile), `GET /api/todos/:id/records/:rid/revisions` lists its revisions, `bun src/cli.ts record-edit <id> <rid> <content>` from the shell, `{ "op": "edit-record", "id": 3, "recordId": 12, "content": "…" }` from chat. There is no delete. Each append or edit and its audit event are committed together. A POST is one new entry; callers should check recent records before retrying after an uncertain network response.
 
+## Install
+
+On an ai-space Space, from the panel's app catalog, or:
+
+```sh
+space app install ai-todo            # the signed package
+space app install ai-todo --source   # cloned to <workspace>/app-src/ai-todo and built on your machine
+```
+
+The list, its records, plans and pictures work without the internet. Parsing, the AI panel and executions need a model configured in the Space (an execution needs a signed-in Claude Code or Codex runtime there); set `TODO_EXECUTE_MODEL` and other settings in `<workspace>/data/ai-todo/.env`.
+
 ## Run locally
 
 ```bash

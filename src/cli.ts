@@ -15,7 +15,7 @@
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
  *   bun src/cli.ts execute <id> [--extra text] [--kind research|code] [--permission p]   hand the todo to the AI, print the result
  * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
- * package was given (<data dir>/service.port, written by its entry; scripts/pack.ts), else 8970.
+ * package was given (<data dir>/service.port, written by the service at boot), else 8970.
  */
 const portFile = process.env.SPACE_APP_DATA_DIR ? Bun.file(`${process.env.SPACE_APP_DATA_DIR}/service.port`) : undefined;
 const assignedPort = portFile && (await portFile.exists()) ? (await portFile.text()).trim() : undefined;
