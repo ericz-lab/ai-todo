@@ -1,0 +1,158 @@
+# The installation package's declaration (ai-space docs/app-packages.md, docs/app-catalog.md).
+# space.yaml stays spec 1 for the git deployment; the components here (everything but spec,
+# version, requires, offline, launch and build) must equal its own, except that the blob store
+# falls back to files on a Space without a bucket: src/release.test.ts checks.
+# Release: raise `version` (and package.json's), then tag v<version>; .github/workflows/release.yml
+# builds, signs and publishes. `bun run pack` builds the same packages locally.
+
+spec: 2
+name: ai-todo
+version: 0.1.0
+title: Todo
+description: A todo list with one AI entry that turns free text into tasks, changes the list on request and plans the day; a task can be handed to the AI to do.
+icon: icon.png
+status: active
+repo: https://github.com/ericz-lab/ai-todo.git
+i18n:
+  zh:
+    title: AI 待办
+    description: 一个 AI 入口的待办清单：随手写的一段话拆成带日期、优先级和标签的任务，一句话就能改清单或排今天的顺序；任务可以交给 AI 执行。
+    agents:
+      planner: { title: 规划师, description: 从命令行读清单、加任务、标完成，帮你安排一天。 }
+    widgets:
+      next: { title: 待办 · 接下来 }
+
+requires:
+  spaceApi: 1
+  bun: 1.3.0
+
+offline:
+  features:
+    - The todo list with its records, plans and pictures kept on this machine
+  online:
+    - AI parsing, planning and execution
+    - Lists on other machines
+
+# The bundle `bun run build` makes; ai-space hands over PORT. Background: an AI execution runs
+# detached from the page for up to TODO_EXECUTE_TIMEOUT, and the planner's CLI calls the service.
+launch:
+  kind: process
+  runtime: bun
+  entry: dist/index.js
+  mode: background
+  health: /healthz
+
+# How a checkout becomes the package: in a scratch copy, never in this tree. src/cli.ts is the
+# planner agent's and the skill's command line (self-contained, run from source by Bun).
+build:
+  install: bun install --frozen-lockfile
+  run: bun run build
+  include: [dist, icon.png, src/cli.ts, agents, skills]
+
+# Chat identity on the panel: reads and changes the list through the CLI.
+agents:
+  - name: planner
+    title: Todo Planner
+    description: Reads the list, adds tasks, marks them done and plans the day through the CLI.
+    avatar: agents/planner.svg
+    prompt: agents/planner.md
+    tools: [Read, Grep, Glob, "Bash(bun src/cli.ts *)"]
+    skills: [./skills/todo]
+
+# What other apps call through ai-space (docs/events.md). The caller's name goes into each
+# todo's `created` event.
+provides:
+  # One page over every machine: ai-todo on a hub reaches this machine's list through the bus
+  # (src/remote.ts). The service itself accepts only ai-todo as the caller.
+  ops:
+    description: A request for one of ai-todo's own page routes on this machine (the list, a task, its records, plan and runs, the AI panel's context and actions), from ai-todo on another space. Body { method, path, contentType?, body64? }; answers what the route answers.
+    http: { method: POST, path: /api/remote }
+    timeout: 15m
+  parse:
+    description: Turn free text into task drafts with dates, priorities and tags resolved; nothing is added. Body { text, timezone? (IANA) }; answers { ok, drafts [{ title, notes?, due?, priority?, tags?, project? }] }. One model call, tens of seconds.
+    http: { method: POST, path: /api/ai/parse }
+    timeout: 3m
+  add:
+    description: Add tasks, all or nothing. Body { drafts [{ title, notes?, due? (YYYY-MM-DD or YYYY-MM-DDTHH:MM), priority? (0-3), tags?, project? }], parentId?, source? (ai or manual) }; answers { ok, todos } with their ids.
+    http: { method: POST, path: /api/todos/bulk }
+    timeout: 30s
+  list:
+    description: Read tasks with their latest records; nothing is changed. Body { status? (active, all, open, doing, review, deferred, done, dropped; default active; review is finished work awaiting the person's acceptance), q?, tag?, project?, limit? (max 500), records? (per task, default 5), plan? (true for each plan's full text) }; answers { ok, todos [{ ...todo, planVersion, planExcerpt (first 300 characters; plan instead with plan true), records [newest first, each with revision and editedAt] }] }.
+    http: { method: POST, path: /api/capabilities/list }
+    timeout: 30s
+  task:
+    description: Read one task in full; nothing is changed. Body { id }; answers { ok, todo (with plan and planVersion), planMeta { version, source, createdAt }, parent, records, recordsNextBefore, subtasks, events, runs } like GET /api/todos/:id.
+    http: { method: POST, path: /api/capabilities/task }
+    timeout: 30s
+  plan:
+    description: Replace a task's plan (方案, the Markdown design of how it is done; at most 50000 characters, empty clears it); the earlier version is kept. Body { id, content, source? (default ai), expectedVersion? (the planVersion you read; a plan changed since answers 409 with the current plan and planVersion) }; answers { ok, todo, planMeta }.
+    http: { method: POST, path: /api/capabilities/plan }
+    timeout: 30s
+  status:
+    description: Move a task to doing (work started), review (finished, for the person to accept; notifies once) or back to open. A task already done or dropped is not reopened (409). Body { id, status (doing, review or open), source? (default ai) }; answers { ok, todo }. ai-space's feedback button moves its tasks this way while the Fix Engineer works on them.
+    http: { method: POST, path: /api/capabilities/status }
+    timeout: 30s
+  record:
+    description: Add a record to a task, with pictures. Multipart { todoId, content? (text, may be empty when there are images), source? (manual, ai, chat or cli), images (0-6 PNG, JPEG, GIF or WebP files) }; answers { ok, record } with its attachments. The whole call is capped at 4 MiB by the bus.
+    http: { method: POST, path: /api/capabilities/record }
+    timeout: 30s
+  # A screenshot from the phone, kept as a task (ai-space docs/events.md#capture).
+  capture-image:
+    description: Keep a picture as a new task. Multipart { file (PNG or JPEG), text? (first line is the title, the rest the notes; 截图 without it), via?, id? (a repeated id answers the first task) }; answers { ok, todo, url, label }. The picture is the task's first record.
+    http: { method: POST, path: /api/capabilities/capture-image }
+    timeout: 30s
+    # `seoul/space`: a screenshot the hub forwards to this machine (needs ai-space with <hub>/<app> callers).
+    callers: [space, seoul/space]
+    capture:
+      kinds: [image]
+      title: Todo
+      i18n:
+        zh: { title: 待办 }
+  # The command box and Shortcuts panel of ai-space offer this (ai-space docs/shortcuts.md).
+  create:
+    description: Add one task from an action form. Body { title, dueDate? (YYYY-MM-DD), dueTime? (HH:MM), notes?, timezone (IANA), idempotencyKey? }; a repeated key answers the first task. Answers { ok, items [{ id, title, url, detail }] }.
+    http: { method: POST, path: /api/capabilities/create }
+    timeout: 30s
+    action:
+      title: Create todo
+      description: Add a task to the todo list, with an optional date and time.
+      keywords: [todo, task, remind]
+      template: todo
+      effect: write
+      idempotent: true
+      result: receipt
+      inputs:
+        - { name: title, type: text, label: Title, required: true, query: true }
+        - { name: dueDate, type: date, label: Date }
+        - { name: dueTime, type: time, label: Time }
+        - { name: notes, type: text, label: Notes }
+      i18n:
+        zh:
+          title: 新建待办
+          description: 往待办清单加一条任务,可带日期和时间。
+          keywords: [待办, 任务, 提醒我, 记一下]
+          inputs: { title: 标题, dueDate: 日期, dueTime: 时间, notes: 备注 }
+
+# A task entering review (验收) tells the person once (ai-space docs/notify.md); no channel configured means skipped.
+notify:
+  channels: [default]
+
+# The `todo` skill: ai-space links it into the workspace on every sync, so any agent session
+# started in the workspace can add, list and finish tasks through the CLI and the API.
+skills:
+  - path: skills/todo
+
+# Panel card: what is due by today, the next todos and the week's completions (items + blocks).
+widgets:
+  - name: next
+    title: Todo · Up Next
+    kind: items
+    source: /api/widget
+    link: /
+    size: 2x1
+    refresh: 2m
+
+storage:
+  database: sqlite
+  # s3 where the Space has a bucket (the git deployments do), a file store elsewhere.
+  blobs: { backend: s3, fallback: file }
