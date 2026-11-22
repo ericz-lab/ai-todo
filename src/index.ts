@@ -511,7 +511,7 @@ export function createServer(opts: ServerOptions) {
     routes: {
       "/": opts.web === false ? () => new Response("no page", { status: 404 }) : index,
       "/healthz": () => new Response("ok"),
-      "/icon.png": () => new Response(Bun.file(new URL("../icon.png", import.meta.url).pathname)),
+      "/icon.png": () => new Response(Bun.file(Bun.fileURLToPath(new URL("../icon.png", import.meta.url)))),
       "/api/widget": (req) => json(widget(), 200, req),
       // The machines this page shows: this one, then the peers running ai-todo (on a hub), each marked online or not.
       "/api/execute/models": { GET: executeModels },
@@ -806,7 +806,7 @@ export function createServer(opts: ServerOptions) {
       if (url.pathname.startsWith("/space/chat/")) return proxyChat(req, url.pathname.slice("/space/chat/".length) + url.search);
       // A bundled release (`bun run build`) serves its hashed pictures from beside the bundle; from source they are routes of the page.
       if (req.method === "GET" && /^\/[A-Za-z0-9_-]+-[a-z0-9]{8}\.(png|svg|webp|ico|jpg)$/.test(url.pathname)) {
-        const file = Bun.file(new URL(`.${url.pathname}`, import.meta.url).pathname);
+        const file = Bun.file(Bun.fileURLToPath(new URL(`.${url.pathname}`, import.meta.url)));
         if (await file.exists()) return new Response(file, { headers: { "cache-control": "max-age=31536000, immutable" } });
       }
       return new Response("not found", { status: 404 });

@@ -65,6 +65,11 @@ const sse = async (res: Response) => {
 
 describe("service", () => {
   let todo: Todo;
+  test("the icon is served from beside the source on every platform", async () => {
+    const r = await fetch(`${base}/icon.png`);
+    expect(r.status).toBe(200);
+    expect((await r.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
   test("health, widget when empty", async () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
     expect((await j("/api/widget")).body).toEqual({
