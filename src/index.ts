@@ -22,8 +22,9 @@ import {
 import { appZone, config, databasePath } from "./config.ts";
 import {
   appendRecord, listRecords, abandonRuns, addEvent, cleanDraft, cleanParent, cleanRecordTime, ConflictError, countTodos, createRun, createTodo, cursorOf, deleteTodo, editRecord, finishRun, getPlanVersion, getRun, getTodo,
-  listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, updateTodo,
+  listEvents, listPlanVersions, listRecordRevisions, listRuns, listSubtasks, listTodos, listTodoSummaries, openDb, projectCounts, reorderTodos, reviewTodo, runningRun, setPlan, statusCounts, tagCounts, undoTodos, updateTodo,
 } from "./db.ts";
+import { itemState, type CardItemState } from "./cards.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
 import { completionsByDay, widgetPayload } from "./widget.ts";
 
@@ -136,6 +137,13 @@ export function createServer(opts: ServerOptions) {
   };
   /** A created todo as an action receipt: its id, title, link and due date in the list's zone. */
   const receipt = (t: Todo) => ({ id: t.id, title: t.title, ...(publicBase ? { url: `${publicBase}/?todo=${t.id}` } : {}), ...(t.due ? { detail: `${t.due.replace("T", " ")} (${defaultTz})` } : {}) });
+  const CARD_MAX = 50;
+  /** A card's todo ids (strings or numbers), or null when one is not an id or there are none or too many. */
+  const cardIds = (v: unknown): number[] | null => {
+    if (!Array.isArray(v) || !v.length || v.length > CARD_MAX) return null;
+    const ids = v.map((x) => Number(x));
+    return ids.every((n) => Number.isInteger(n) && n > 0) ? ids : null;
+  };
   const idOf = (s: string): number | null => { const n = Number(s); return Number.isInteger(n) && n > 0 ? n : null; };
   /** A call through ai-space's bus (space.yaml `provides`) names the calling app; it goes into the todo's `created` event. */
   const caller = (req: Request): Record<string, unknown> => { const app = req.headers.get("x-space-caller")?.trim().slice(0, 100); return app ? { caller: app } : {}; };
@@ -559,6 +567,28 @@ export function createServer(opts: ServerOptions) {
             const todo = createTodo(db, cleanDraft({ title: b.title, notes: b.notes, due }), "manual", { ...caller(req), ...(key ? { idempotencyKey: key } : {}) });
             return json({ ok: true, items: [receipt(todo)] }, 201);
           } catch (e) { return fail((e as Error).message); }
+        },
+      },
+      // The chat cards of the CLI's `add` (ai-space docs/chat-cards.md): ai-space reads the items' state each time it
+      // shows a card, and undoes through `card-undo`. Both are called by `space` only (space.yaml `callers`).
+      "/api/capabilities/card-state": {
+        POST: async (req) => {
+          const b = await body(req);
+          const ids = cardIds(b.ids);
+          if (!ids) return fail(`ids must be a list of 1 to ${CARD_MAX} todo ids`);
+          const items: CardItemState[] = ids.map((id) => { const t = getTodo(db, id); return t ? itemState(t, lang) : { id: String(id), status: "removed" }; });
+          return json({ ok: true, items });
+        },
+      },
+      "/api/capabilities/card-undo": {
+        POST: async (req) => {
+          const b = await body(req);
+          const list = Array.isArray(b.items) ? b.items : [];
+          const ids = cardIds(list.map((i) => (i && typeof i === "object" ? (i as { id?: unknown }).id : undefined)));
+          if (!ids || ids.length !== list.length) return fail(`items must be 1 to ${CARD_MAX} { id, version? }`);
+          const items = list.map((i, n) => { const v = (i as { version?: unknown }).version; return { id: ids[n]!, ...(Number.isInteger(v) ? { version: v as number } : {}) }; });
+          const done = undoTodos(db, items, "chat", { via: "card-undo", ...caller(req) });
+          return json({ ok: true, items: done.map((r): CardItemState => (r.removed ? { id: String(r.id), status: "removed" } : { ...itemState(r.todo, lang), changed: true })) });
         },
       },
       // `list` for other apps (space.yaml `provides.list`): tasks with their latest records, for a page that

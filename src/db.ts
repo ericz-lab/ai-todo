@@ -87,6 +87,8 @@ export function openDb(path: string): Database {
   // Plans came later still: the current text and its version number on the todo, every version in its own table.
   if (!cols.some((c) => c.name === "plan")) db.exec("ALTER TABLE todos ADD COLUMN plan TEXT NOT NULL DEFAULT ''");
   if (!cols.some((c) => c.name === "plan_version")) db.exec("ALTER TABLE todos ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0");
+  // A version per todo, for the chat cards' undo (it deletes only what was not changed since); existing todos start at 1.
+  if (!cols.some((c) => c.name === "version")) db.exec("ALTER TABLE todos ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
   const recordCols = db.query("PRAGMA table_info(todo_records)").all() as { name: string }[];
   if (!recordCols.some(c => c.name === "attachments")) db.exec("ALTER TABLE todo_records ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
   // Editable records: the current revision on the record, every revision (0 = as appended) in its own table.
@@ -135,6 +137,7 @@ const toTodo = (r: Row): Todo => ({
   parentId: (r.parent_id as number | null) ?? null,
   subtasks: { total: (r.sub_total as number | undefined) ?? 0, done: (r.sub_done as number | undefined) ?? 0 },
   position: r.position as number,
+  version: (r.version as number | undefined) ?? 1,
   createdAt: r.created_at as string,
   updatedAt: r.updated_at as string,
   doneAt: (r.done_at as string | null) ?? null,
@@ -480,7 +483,7 @@ export function setPlan(db: Database, todoId: number, content: unknown, source: 
       db.query("INSERT INTO todo_plan_versions (todo_id, version, content, source, session, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(todoId, version, text, source, session, t);
       addEvent(db, todoId, "plan-edited", { source, version, ...opts.origin }, t);
     }
-    db.query("UPDATE todos SET plan = ?, plan_version = ?, updated_at = ? WHERE id = ?").run(text, version, t, todoId);
+    db.query("UPDATE todos SET plan = ?, plan_version = ?, version = version + 1, updated_at = ? WHERE id = ?").run(text, version, t, todoId);
     return { todo: getTodo(db, todoId)!, version: getPlanVersion(db, todoId, version), merged: merge };
   })();
 }
@@ -554,7 +557,7 @@ export function updateTodo(db: Database, id: number, patch: Patch, source: Sourc
   const next = { ...before, ...p };
   const doneAt = next.status === "done" ? (before.status === "done" ? before.doneAt : t) : null;
   db.transaction(() => {
-    db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, parent_id = ?, updated_at = ?, done_at = ? WHERE id = ?`)
+    db.query(`UPDATE todos SET title = ?, notes = ?, status = ?, priority = ?, due = ?, tags = ?, project = ?, parent_id = ?, version = version + 1, updated_at = ?, done_at = ? WHERE id = ?`)
       .run(next.title, next.notes, next.status, next.priority, next.due, JSON.stringify(next.tags), next.project, next.parentId, t, doneAt, id);
     const kind = "status" in changed ? String(next.status) : "edited";
     if (kind !== "edited" || !mergeEdit(db, id, source, changed, t)) addEvent(db, id, kind, { source, changed, ...origin }, t);
@@ -598,16 +601,36 @@ export function cleanReason(v: unknown): string {
   return s;
 }
 
-/** Deleting a todo deletes its subtasks with it; every one leaves a `deleted` line. */
-export function deleteTodo(db: Database, id: number, source: Source = "manual"): boolean {
+/** Deleting a todo deletes its subtasks with it; every one leaves a `deleted` line (`origin` adds to it: the caller, a card's undo). */
+export function deleteTodo(db: Database, id: number, source: Source = "manual", origin: Record<string, unknown> = {}): boolean {
   const before = getTodo(db, id);
   if (!before) return false;
   db.transaction(() => {
-    for (const sub of listSubtasks(db, id)) deleteTodo(db, sub.id, source);
+    for (const sub of listSubtasks(db, id)) deleteTodo(db, sub.id, source, origin);
     db.query("DELETE FROM todos WHERE id = ?").run(id);
-    addEvent(db, id, "deleted", { source, title: before.title, ...(before.parentId ? { parentId: before.parentId } : {}) });
+    addEvent(db, id, "deleted", { source, title: before.title, ...(before.parentId ? { parentId: before.parentId } : {}), ...origin });
   })();
   return true;
+}
+
+/**
+ * A chat card's undo (ai-space docs/chat-cards.md), all in one transaction: each todo whose version is
+ * still the one the card was printed with is deleted (its subtasks with it); one changed since, or
+ * holding a subtask the request does not name or that changed, is left alone and answered as it is now with
+ * `changed`; an id that no longer exists is answered `removed` (an undo is idempotent).
+ */
+export function undoTodos(db: Database, items: { id: number; version?: number }[], source: Source, origin: Record<string, unknown> = {}): ({ id: number; removed: true } | { id: number; removed: false; todo: Todo })[] {
+  const named = new Map(items.map((i) => [i.id, i.version]));
+  const changed = (t: Todo) => named.get(t.id) !== undefined && named.get(t.id) !== t.version;
+  return db.transaction(() => items.map(({ id }) => {
+    const todo = getTodo(db, id);
+    if (!todo) return { id, removed: true as const };
+    // Deleting a parent takes its subtasks along: each must be named and unchanged too.
+    const stale = changed(todo) || listSubtasks(db, id).some((s) => !named.has(s.id) || changed(s));
+    if (stale) return { id, removed: false as const, todo };
+    deleteTodo(db, id, source, origin);
+    return { id, removed: true as const };
+  }))();
 }
 
 /** Explicit ordering among open todos: `ids` in the wanted order get positions 1..n. */

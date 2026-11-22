@@ -270,7 +270,7 @@ describe("review through the service", () => {
 });
 
 describe("review for the AI and the panel", () => {
-  const t = (id: number, status: Todo["status"]): Todo => ({ id, title: `t${id}`, notes: "", plan: "", planVersion: 0, status, priority: 0, due: null, tags: [], project: null, source: "manual", parentId: null, subtasks: { total: 0, done: 0 }, position: id, createdAt: "", updatedAt: "", doneAt: null });
+  const t = (id: number, status: Todo["status"]): Todo => ({ id, title: `t${id}`, notes: "", plan: "", planVersion: 0, status, priority: 0, due: null, tags: [], project: null, source: "manual", parentId: null, subtasks: { total: 0, done: 0 }, position: id, version: 1, createdAt: "", updatedAt: "", doneAt: null });
   test("chat context and prompts", () => {
     const ctx = chatContext([t(1, "open"), t(2, "review")], { now: new Date("2026-10-25T00:00:00Z"), timezone: "Asia/Shanghai", lang: "zh" });
     expect(ctx.text).toContain("Open tasks (1)");

@@ -8,6 +8,8 @@
  *   bun src/cli.ts plan-history <id> [--version n]                the plan's versions, or one in full
  *   bun src/cli.ts show <id>
  *   bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text] [--parent id]
+ *   bun src/cli.ts add --drafts <file|-> [--parent id]   several at once, all or nothing: a JSON list of { title, due?, priority?, tags?, project?, notes? }
+ *     Both print the added lines, then a `::space-card` line: the chat shows it as a card with Undo (ai-space docs/chat-cards.md).
  *   bun src/cli.ts done <id> | start <id> | defer <id> | reopen <id> | rm <id>      (done and rm take the subtasks along)
  *   bun src/cli.ts review <id>                   finished work: hand it to the person for acceptance (验收)
  *   bun src/cli.ts accept <id> | reject <id> <reason>   the person's verdict on a task in review
@@ -17,6 +19,8 @@
  * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
  * package was given (<data dir>/service.port, written by the service at boot), else 8970.
  */
+import { cardLine, receiptCards } from "./cards.ts";
+
 const portFile = process.env.SPACE_APP_DATA_DIR ? Bun.file(`${process.env.SPACE_APP_DATA_DIR}/service.port`) : undefined;
 const assignedPort = portFile && (await portFile.exists()) ? (await portFile.text()).trim() : undefined;
 const base = (process.env.TODO_URL ?? `http://127.0.0.1:${process.env.PORT ?? assignedPort ?? 8970}`).replace(/\/$/, "");
@@ -36,7 +40,7 @@ const call = async (path: string, init: RequestInit = {}) => {
   if (!r.ok || body.ok === false) die(`failed: ${body.error ?? `HTTP ${r.status}`}`);
   return body;
 };
-type Todo = { id: number; title: string; status: string; priority: number; due: string | null; tags: string[]; project: string | null; notes: string; plan: string; planVersion: number; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; doneAt: string | null };
+type Todo = { id: number; title: string; status: string; priority: number; version: number; due: string | null; tags: string[]; project: string | null; notes: string; plan: string; planVersion: number; source: string; parentId: number | null; subtasks: { total: number; done: number }; createdAt: string; doneAt: string | null };
 const line = (t: Todo, indent = "") => `#${t.id}\t${t.status}\t${t.due ?? "-"}\t${"!".repeat(t.priority) || "-"}\t${indent}${t.title}${t.subtasks?.total ? ` [${t.subtasks.done}/${t.subtasks.total}]` : ""}${t.project ? ` @${t.project}` : ""}${t.tags.length ? ` ${t.tags.map((x) => `#${x}`).join(" ")}` : ""}`;
 
 try {
@@ -119,9 +123,20 @@ try {
       break;
     }
     case "add": {
-      const title = args.join(" ").trim(); if (!title) die("usage: add <title> [--due ...] [--priority n] [--tags a,b] [--project p] [--notes text]");
-      const { todo } = (await call("/api/todos", { method: "POST", body: JSON.stringify({ title, due: flags.due || null, priority: flags.priority ?? 0, tags: flags.tags ?? [], project: flags.project || null, notes: flags.notes ?? "", parentId: flags.parent ? Number(flags.parent) : null, source: "cli" }) })) as { todo: Todo };
-      console.log(line(todo));
+      const parentId = flags.parent ? Number(flags.parent) : null;
+      let todos: Todo[];
+      if (flags.drafts !== undefined) {
+        const drafts = JSON.parse(await readText(flags.drafts)) as unknown;
+        if (!Array.isArray(drafts) || !drafts.length) die("--drafts must be a JSON list of { title, due?, priority?, tags?, project?, notes? }");
+        ({ todos } = (await call("/api/todos/bulk", { method: "POST", body: JSON.stringify({ drafts, parentId, source: "cli" }) })) as { todos: Todo[] });
+      } else {
+        const title = args.join(" ").trim(); if (!title) die("usage: add <title> [--due ...] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id]");
+        const { todo } = (await call("/api/todos", { method: "POST", body: JSON.stringify({ title, due: flags.due || null, priority: flags.priority ?? 0, tags: flags.tags ?? [], project: flags.project || null, notes: flags.notes ?? "", parentId, source: "cli" }) })) as { todo: Todo };
+        todos = [todo];
+      }
+      for (const t of todos) console.log(line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : ""));
+      // The chat card of what was just added; outside a chat it is one more line to ignore.
+      for (const card of receiptCards(todos, process.env.TODO_LANG)) console.log(cardLine(card));
       break;
     }
     case "move": {
@@ -181,7 +196,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier]");
+      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier]");
   }
 } catch (e) {
   die((e as Error).message);

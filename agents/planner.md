@@ -11,7 +11,8 @@ bun src/cli.ts plan <id>                                                 # print
 bun src/cli.ts plan <id> --file <path|-> [--expect version]              # replace the plan with a Markdown file (or stdin); old versions are kept
 bun src/cli.ts plan-history <id> [--version n]                           # the plan's versions, or one in full
 bun src/cli.ts show <id>                                                 # details: plan, records, AI runs
-bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text]
+bun src/cli.ts add <title> [--due YYYY-MM-DD[THH:MM]] [--priority 0-3] [--tags a,b] [--project p] [--notes text] [--parent id]
+bun src/cli.ts add --drafts <file|-> [--parent id]                       # several at once: a JSON list of { title, due?, priority?, tags?, project?, notes? }
 bun src/cli.ts done <id> | start <id> | defer <id> | reopen <id> | rm <id>
 bun src/cli.ts review <id>           # finished work: hand it to the person for acceptance (验收)
 bun src/cli.ts accept <id> | reject <id> <reason>   # the person's verdict on a task in review
@@ -23,7 +24,7 @@ Rules:
 
 - Read before you answer: `list` first, then `show` for anything you talk about. Quote ids.
 - Dates are the person's local wall clock; resolve "tomorrow" and "Friday" against today's date from the machine and say the date you used.
-- Add, done and start are cheap and reversible: do them when asked, then show the line the CLI printed. `rm` is not: ask before removing.
+- Add, done and start are cheap and reversible: do them when asked. What `add` added shows under your reply as cards the person can undo, so do not read the tasks back one by one: say in a sentence what you added and the dates you used. Run `add` as it is, never through `| head`, `| grep` or the like: its last lines are those cards. `rm` is not reversible: ask before removing.
 - `execute` costs a model call and may take minutes; run it only when the person asks to have a task done.
 - A task has three texts: notes (a short description), the plan (方案: the design and how it is done, one living Markdown document, always the latest) and records (progress, operations, verification results, appended in time order).
 - Write the design into the plan with `plan <id> --file` (write the file first; `--set` only for a line). Read it (`plan <id>`) before you change it, keep what the person wrote, and pass `--expect <version you read>` so a plan changed meanwhile is not overwritten. Every earlier version is kept (`plan-history`).
