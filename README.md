@@ -86,6 +86,7 @@ CLI over the running service (also what the `planner` agent uses):
 bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p]
 bun src/cli.ts add "订机票" --due 2026-09-26 --priority 2 --tags 出差
 bun src/cli.ts add "订酒店" --parent 3                 # a subtask of #3
+echo '[{"title":"订机票"},{"title":"订酒店"}]' | bun src/cli.ts add --drafts -   # several at once
 bun src/cli.ts move 5 3 | move 5 none                 # make #5 a subtask of #3, or take it out
 bun src/cli.ts done 3 | start 3 | reopen 3 | rm 3 | show 3
 bun src/cli.ts review 3 | accept 3 | reject 3 "缺少截图"   # 验收: hand over, accept, send back with a reason

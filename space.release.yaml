@@ -47,7 +47,7 @@ launch:
 build:
   install: bun install --frozen-lockfile
   run: bun run build
-  include: [dist, icon.png, src/cli.ts, agents, skills]
+  include: [dist, icon.png, src/cli.ts, src/cards.ts, agents, skills]
 
 # Chat identity on the panel: reads and changes the list through the CLI.
 agents:
@@ -108,6 +108,18 @@ provides:
       title: Todo
       i18n:
         zh: { title: 待办 }
+  # Chat cards (ai-space docs/chat-cards.md): the CLI's `add` prints a receipt card; ai-space reads its items' state
+  # each time it shows it and undoes through these, as `space` only.
+  card-state:
+    description: The current state of the todos on a chat card. Body { ids [todo ids] }; answers { ok, items [{ id, status (active, done or removed), title, detail, url, version }] }; a todo that no longer exists is removed.
+    http: { method: POST, path: /api/capabilities/card-state }
+    timeout: 15s
+    callers: [space]
+  card-undo:
+    description: Undo a chat card, all or nothing per todo. Body { items [{ id, version }] }; a todo still at that version is deleted (its subtasks with it, which must be named too); one changed since answers its current content with changed true; a missing one answers removed. Answers { ok, items [{ id, status, ... }] }.
+    http: { method: POST, path: /api/capabilities/card-undo }
+    timeout: 15s
+    callers: [space]
   # The command box and Shortcuts panel of ai-space offer this (ai-space docs/shortcuts.md).
   create:
     description: Add one task from an action form. Body { title, dueDate? (YYYY-MM-DD), dueTime? (HH:MM), notes?, timezone (IANA), idempotencyKey? }; a repeated key answers the first task. Answers { ok, items [{ id, title, url, detail }] }.

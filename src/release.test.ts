@@ -25,6 +25,6 @@ test("space.release.yaml carries space.yaml's components", async () => {
   expect(offline).toBeDefined();
   expect(launch).toMatchObject({ kind: "process", entry: "dist/index.js", health: (source.service as { health: string }).health });
   expect(build).toMatchObject({ run: "bun run build" });
-  // The planner agent runs `bun src/cli.ts`: the package must carry it.
-  expect((build as { include: string[] }).include).toEqual(expect.arrayContaining(["dist", "src/cli.ts", "agents", "skills", "icon.png"]));
+  // The planner agent runs `bun src/cli.ts` (which prints its chat cards with src/cards.ts): the package must carry both.
+  expect((build as { include: string[] }).include).toEqual(expect.arrayContaining(["dist", "src/cli.ts", "src/cards.ts", "agents", "skills", "icon.png"]));
 });

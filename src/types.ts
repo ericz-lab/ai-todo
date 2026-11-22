@@ -28,6 +28,8 @@ export type Todo = {
   /** How many subtasks it has and how many are done; zeros for a todo without any. */
   subtasks: { total: number; done: number };
   position: number;
+  /** One more on every change of the todo or its plan (not its records); a chat card's undo checks it. */
+  version: number;
   createdAt: string;
   updatedAt: string;
   doneAt: string | null;
@@ -37,7 +39,7 @@ export type Todo = {
  * A todo as the page's list shows it (`GET /api/todos?fields=list`): no plan, no full notes, only
  * the first characters of the notes; the detail (`GET /api/todos/:id`) has the rest.
  */
-export type TodoSummary = Omit<Todo, "notes" | "plan" | "position" | "source"> & { notesExcerpt: string };
+export type TodoSummary = Omit<Todo, "notes" | "plan" | "position" | "source" | "version"> & { notesExcerpt: string };
 
 /** How many todos each stage holds; `active` is what the active list shows (open and doing, not under a deferred parent). */
 export type StatusCounts = { active: number; review: number; deferred: number; done: number };
