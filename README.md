@@ -20,6 +20,26 @@ Subtasks: a task can have steps, one level deep. They sit indented under their t
 
 The `todo` skill ships with the app: ai-space links it into the workspace, so any agent session there ("记一下明天要交报告", "今天要做什么") reaches the same list through the CLI.
 
+## Scheduled sweep (定时清理)
+
+Off by default. **定时清理** at the foot of the left column opens a small dialog: a switch, the interval (4, 8 or 24 hours), when the last sweep ran and what it did, when the next is due, and **立即清理** (sweep now). The setting belongs to the machine whose list is shown; every machine has its own.
+
+When it is on, the AI looks at the tasks nobody has started (status 待办 / `open`; not doing, review, deferred or done) and sorts each into one of three in one model call (a few for a long list):
+
+- **can do**: it starts the same execution as **AI 执行**, one task after another, at most `TODO_SWEEP_MAX_RUNS` (3) per sweep; the result is a run under the task and a successful one moves the task to **验收** for you to accept. Research runs read only; code runs get `TODO_SWEEP_PERMISSION` (default `acceptEdits`: edit files, no commands that are not pre-approved), not the full permission a manual run defaults to.
+- **not sure**: one operation record (source `ai`) says what is unclear and what you need to decide. Nothing runs.
+- **cannot**: nothing; no record, no history line.
+
+Tasks needing your accounts, money, a physical action, a decision only you can make or information the AI does not have are never run. Never looked at: tasks tagged `#人工` (or under a parent tagged so), tasks with an AI run in flight, a task whose steps are not all finished (its steps are looked at one by one), and a task already judged that has not changed since and has no new record. So an "unsure" record is written once; add a record or change the task and the next sweep looks again. A run the sweep started that failed is not retried until the task changes. The history marks what the sweep did (`· 定时清理`).
+
+```bash
+bun src/cli.ts sweep                     # switch, interval, last result, next
+bun src/cli.ts sweep on --every 8        # or: sweep off
+bun src/cli.ts sweep run                 # one now (the switch must be on), waits and prints what it did
+```
+
+API: `GET /api/sweep`, `PATCH /api/sweep { enabled?, intervalHours? }`, `POST /api/sweep/run` (202; 409 when off or one is running). ai-space's scheduler calls `POST /jobs/sweep` every 15 minutes (`space.yaml` `tasks`); the sweep runs when the chosen hours have passed since the last one.
+
 ## Plan (方案)
 
 Every task has a **方案**: one Markdown document with the design and how the task is done, always the latest. Notes stay the short description of the task; progress, actions and acceptance results go into operation records, not into the plan. In the detail the plan sits under the notes, read-only: two lines of it, **更多** (when it is longer) opens the whole plan in an overlay, and only **编辑** turns it into an editor until **完成** (or Esc), so a stray click never edits it. While editing it saves as you type (not while an IME composes), shows `v3 · 2 小时前 · manual`, and **版本** lists every version to read or restore (a restore is a new version; nothing is deleted). When another window or the AI changed the plan meanwhile the page says so and offers to load the latest or overwrite. Up to 50,000 characters.
@@ -92,6 +112,7 @@ bun src/cli.ts done 3 | start 3 | reopen 3 | rm 3 | show 3
 bun src/cli.ts review 3 | accept 3 | reject 3 "缺少截图"   # 验收: hand over, accept, send back with a reason
 bun src/cli.ts parse "明天下午三点前发周报"      # drafts, not added
 bun src/cli.ts execute 3 --extra "只要一页"
+bun src/cli.ts sweep [on|off] [--every 4|8|24] | sweep run   # the scheduled sweep
 ```
 
 ## Several machines
