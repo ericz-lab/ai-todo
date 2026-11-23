@@ -27,6 +27,7 @@ import {
 import { itemState, type CardItemState } from "./cards.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
 import { completionsByDay, widgetPayload } from "./widget.ts";
+import { createSweeper, listSweeps, SWEEP_MAX_RUNS, type SweepTrigger } from "./sweep.ts";
 
 export interface ServerOptions {
   db: Database;
@@ -47,6 +48,10 @@ export interface ServerOptions {
   webTools?: boolean;
   /** A successful execution of an open or doing todo sends it to review (验收); false keeps its status (TODO_AUTO_REVIEW=0). */
   autoReview?: boolean;
+  /** How many executions one scheduled sweep starts at most (TODO_SWEEP_MAX_RUNS); SWEEP_MAX_RUNS when unset. */
+  sweepMaxRuns?: number;
+  /** What a `code` run the sweep starts may do (TODO_SWEEP_PERMISSION); acceptEdits when unset, `default` is read-only. */
+  sweepPermission?: string;
   now?: () => Date;
   /** This machine's SPACE_NAME, the peers running ai-todo and how to reach one; absent: this machine only. */
   machine?: string;
@@ -104,8 +109,11 @@ const log = (msg: string) => console.log(`[ai-todo] ${new Date().toISOString()} 
 class Live {
   text = "";
   done: { ok: boolean; run: Run; error?: string } | null = null;
+  /** Resolves with the finished run (the scheduled sweep waits on it before starting the next). */
+  finished: Promise<Run>;
+  settle: (run: Run) => void = () => {};
   private listeners = new Set<(e: { event: string; data: unknown }) => void>();
-  constructor(public run: Run) {}
+  constructor(public run: Run) { this.finished = new Promise((resolve) => { this.settle = resolve; }); }
   emit(event: string, data: unknown) { for (const l of this.listeners) l({ event, data }); }
   subscribe(l: (e: { event: string; data: unknown }) => void) { this.listeners.add(l); return () => this.listeners.delete(l); }
 }
@@ -126,6 +134,13 @@ export function createServer(opts: ServerOptions) {
   const asked = opts.executePermission || "bypassPermissions";
   if (asked !== "default" && !(EXECUTE_PERMISSIONS as readonly string[]).includes(asked)) throw new Error(`TODO_EXECUTE_PERMISSION must be default or one of ${EXECUTE_PERMISSIONS.join(", ")}, got ${asked}`);
   const executePermission = asked === "default" ? undefined : (asked as ExecutePermission);
+  // The sweep runs unattended: its code runs get their own, stricter default (research is read-only anyway).
+  const sweepAsked = opts.sweepPermission || "acceptEdits";
+  if (sweepAsked !== "default" && !(EXECUTE_PERMISSIONS as readonly string[]).includes(sweepAsked)) throw new Error(`TODO_SWEEP_PERMISSION must be default or one of ${EXECUTE_PERMISSIONS.join(", ")}, got ${sweepAsked}`);
+  // `plan` writes nothing either: the sweep treats it as read-only when it tells the model what a run can do.
+  const sweepPermission = sweepAsked === "default" || sweepAsked === "plan" ? undefined : (sweepAsked as ExecutePermission);
+  const sweepMaxRuns = opts.sweepMaxRuns ?? SWEEP_MAX_RUNS;
+  if (!Number.isInteger(sweepMaxRuns) || sweepMaxRuns < 0 || sweepMaxRuns > 50) throw new Error(`TODO_SWEEP_MAX_RUNS must be 0..50, got ${sweepMaxRuns}`);
   const autoReview = opts.autoReview ?? true;
   const tools = (opts.webTools ?? true) ? WEB_TOOLS : [];
   const model: ModelClient | null = spaceApiUrl && spaceAppToken ? modelClient(spaceApiUrl, spaceAppToken) : null;
@@ -268,12 +283,13 @@ export function createServer(opts: ServerOptions) {
   };
 
   /** Start the model on a todo; the run is stored first and finished whatever the page does. */
-  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang, ask: { kind?: ExecuteKind; permission?: ExecutePermission | "default"; model?: string } = {}): Live => {
+  /** `origin` goes into the run's `run-started` and `review` events: what started it when not the person (`via: sweep`). */
+  const startExecution = (todo: Todo, extra: string, timezone: string, answerLang = lang, ask: { kind?: ExecuteKind; permission?: ExecutePermission | "default"; model?: string; origin?: Record<string, unknown> } = {}): Live => {
     // What the run may do: the request's own choice; else research reads only and anything else gets this machine's default.
     const permission = ask.permission !== undefined ? (ask.permission === "default" ? undefined : ask.permission) : ask.kind === "research" ? undefined : executePermission;
     // `todo` carries the plan; executePrompt cuts it (and the parent's) to what a prompt can hold.
     const prompt = executePrompt(todo, { now: now(), timezone, lang: answerLang, extra, kind: ask.kind, parent: todo.parentId ? getTodo(db, todo.parentId) : null, subtasks: listSubtasks(db, todo.id), records: listRecords(db, todo.id, 5) });
-    const run = createRun(db, todo.id, prompt, null);
+    const run = createRun(db, todo.id, prompt, null, ask.origin);
     const l = new Live(run);
     live.set(run.id, l);
     void (async () => {
@@ -296,12 +312,13 @@ export function createServer(opts: ServerOptions) {
       if (finished!.status === "ok" && autoReview) {
         const current = getTodo(db, todo.id);
         if (current && (current.status === "open" || current.status === "doing")) {
-          try { changeTodo(todo.id, { status: "review" }, "ai", { runId: run.id }); } catch (e) { log(`review #${todo.id}: ${(e as Error).message}`); }
+          try { changeTodo(todo.id, { status: "review" }, "ai", { runId: run.id, ...ask.origin }); } catch (e) { log(`review #${todo.id}: ${(e as Error).message}`); }
         }
       }
       l.run = finished!;
       l.done = { ok: finished!.status === "ok", run: finished!, error: finished!.error ?? undefined };
       l.emit(l.done.ok ? "done" : "error", { ok: l.done.ok, run: finished!, error: l.done.error });
+      l.settle(finished!);
       log(`execute #${todo.id} run ${run.id}: ${finished!.status}${finished!.error ? ` (${finished!.error})` : ""} ${finished!.output.length} chars`);
       setTimeout(() => live.delete(run.id), 60_000).unref();
     })();
@@ -434,6 +451,28 @@ export function createServer(opts: ServerOptions) {
 
   const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
 
+  // ---- the scheduled sweep (src/sweep.ts): its `do` verdicts run through startExecution, like the page's AI 执行
+  const sweeper = createSweeper({
+    db, model, now, timezone: defaultTz, lang, maxRuns: sweepMaxRuns, codePermission: sweepPermission, log,
+    execute: (todo, kind, permission, origin) => {
+      const l = startExecution(todo, "", defaultTz, lang, { kind, permission, origin });
+      return { runId: l.run.id, finished: l.finished.then((r) => ({ ok: r.status === "ok" })) };
+    },
+  });
+  const sweepAnswer = () => ({ ok: true, ...sweeper.status(), recent: listSweeps(db, 5) });
+  /**
+   * POST /jobs/sweep, ai-space's scheduler every 15 minutes (space.yaml `tasks`): one sweep when it is due,
+   * answered when it is over with the scheduler's verdict protocol (`skipped` when off, not due, or busy).
+   * `x-space-trigger: manual` (the operator's run-now) skips the interval as the page's button does.
+   */
+  const sweepJob = async (req: Request): Promise<Response> => {
+    const trigger: SweepTrigger = req.headers.get("x-space-trigger") === "manual" ? "manual" : "schedule";
+    const b = sweeper.begin(trigger);
+    if (!b.ok) return json({ ok: b.status !== "error", status: b.status, error: b.reason });
+    const done = await b.done;
+    return json({ ok: done.status === "ok", status: done.status, ...(done.error ? { error: done.error } : {}), sweep: done });
+  };
+
   const machine = opts.machine ?? "";
   const machines = opts.machines ?? (async (): Promise<Machines> => ({ local: machine, peers: [], peerHealth: [], error: null }));
   let selfPort = 0;
@@ -527,6 +566,21 @@ export function createServer(opts: ServerOptions) {
       "/api/m/:peer/*": { GET: viaPeer, POST: viaPeer, PATCH: viaPeer, PUT: viaPeer, DELETE: viaPeer },
       "/api/remote": { POST: remote },
       "/api/transfer": { POST: transfer },
+      // The scheduled sweep: its switch and interval (per machine), what the last one did, and a manual start.
+      "/api/sweep": {
+        GET: (req) => json(sweepAnswer(), 200, req),
+        PATCH: async (req) => { try { sweeper.setSettings(await body(req)); return json(sweepAnswer()); } catch (e) { return fail((e as Error).message); } },
+      },
+      // A sweep now, whatever the interval; never while the switch is off or another runs (409). It goes on after the answer.
+      "/api/sweep/run": {
+        POST: () => {
+          const b = sweeper.begin("manual");
+          if (!b.ok) return json({ ok: false, error: b.reason }, b.status === "error" ? 502 : 409);
+          return json({ ...sweepAnswer(), started: b.sweep }, 202);
+        },
+      },
+      // A sweep's executions take minutes: no idle cut-off while the scheduler waits for the answer.
+      "/jobs/sweep": { POST: (req, srv) => { srv.timeout(req, 0); return sweepJob(req); } },
 
       "/api/todos": {
         GET: (req) => { try { return json(listBody(new URL(req.url).searchParams), 200, req); } catch (e) { return fail((e as Error).message); } },
@@ -844,7 +898,7 @@ export function createServer(opts: ServerOptions) {
   });
 
   selfPort = server.port ?? 0;
-  return { server, startExecution, live };
+  return { server, startExecution, live, sweeper };
 }
 
 if (import.meta.main) {
@@ -860,6 +914,7 @@ if (import.meta.main) {
     machine, machines, forward,
     db, port: config.port, publicBase: config.publicBase, spaceApiUrl: config.spaceApiUrl, spaceAppToken: config.spaceAppToken,
     timezone: config.timezone, lang: config.lang, executeTimeoutMs: config.executeTimeoutSec * 1000, executeModel: config.executeModel, executePermission: config.executePermission, webTools: config.web, autoReview: config.autoReview,
+    sweepMaxRuns: config.sweepMaxRuns, sweepPermission: config.sweepPermission,
   });
   log(`listening on http://127.0.0.1:${server.port} (db ${databasePath()}, ai ${config.spaceApiUrl ? "on" : "off"})`);
   // An installed package runs on a port ai-space picks: the CLI (the planner agent, the skill) reads it here.

@@ -76,6 +76,40 @@ CREATE TABLE IF NOT EXISTS todo_record_revisions (
 );
 `;
 
+/**
+ * The scheduled sweep (src/sweep.ts): its switch and interval (one row), one row per sweep that ran,
+ * and the last judgement per todo, so a task is not judged again until it changes.
+ */
+const SWEEP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS sweep_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  interval_hours INTEGER NOT NULL DEFAULT 24,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sweeps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  counts TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sweep_verdicts (
+  todo_id INTEGER PRIMARY KEY,
+  version INTEGER NOT NULL,
+  last_record_id INTEGER NOT NULL DEFAULT 0,
+  verdict TEXT NOT NULL,
+  kind TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  record_id INTEGER,
+  run_id INTEGER,
+  sweep_id INTEGER NOT NULL,
+  judged_at TEXT NOT NULL
+);
+`;
+
 export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
@@ -99,6 +133,7 @@ export function openDb(path: string): Database {
   db.exec("CREATE INDEX IF NOT EXISTS todos_done ON todos(status, done_at DESC, id DESC)");
   // The week's trend reads the done events by time; without this it scans every event.
   db.exec("CREATE INDEX IF NOT EXISTS todo_events_kind ON todo_events(kind, at)");
+  db.exec(SWEEP_SCHEMA);
   return db;
 }
 
@@ -373,8 +408,8 @@ export class ConflictError extends Error {
   constructor(message: string, public current: Record<string, unknown>) { super(message); }
 }
 
-/** One transaction per append: simultaneous writers never replace each other's entries. */
-export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = [], createdAt?: string): OperationRecord | null {
+/** One transaction per append: simultaneous writers never replace each other's entries. `origin` adds to the event (the sweep that wrote it). */
+export function appendRecord(db: Database, todoId: number, content: unknown, source: Source = "manual", attachments: RecordImage[] = [], createdAt?: string, origin: Record<string, unknown> = {}): OperationRecord | null {
   const text = attachments.length && content === "" ? "" : cleanRecord(content);
   if (!SOURCES.includes(source)) throw new Error("invalid record source");
   return db.transaction(() => {
@@ -384,7 +419,7 @@ export function appendRecord(db: Database, todoId: number, content: unknown, sou
     const row = db.query("INSERT INTO todo_records (todo_id, content, source, created_at, attachments) VALUES (?, ?, ?, ?, ?) RETURNING *")
       .get(todoId, text, source, createdAt ?? t, JSON.stringify(attachments)) as Row;
     db.query("UPDATE todos SET updated_at = ? WHERE id = ?").run(t, todoId);
-    addEvent(db, todoId, "record-added", { source, recordId: row.id }, t);
+    addEvent(db, todoId, "record-added", { source, recordId: row.id, ...origin }, t);
     return toRecord(row);
   })();
 }
@@ -655,9 +690,10 @@ export function projectCounts(db: Database, status: ListFilter["status"] = "acti
 
 // ---- runs
 
-export function createRun(db: Database, todoId: number, prompt: string, model: string | null): Run {
+/** `origin` adds to the `run-started` event: what started the run when it was not the person (the scheduled sweep). */
+export function createRun(db: Database, todoId: number, prompt: string, model: string | null, origin: Record<string, unknown> = {}): Run {
   const r = db.query("INSERT INTO runs (todo_id, prompt, model, started_at) VALUES (?, ?, ?, ?) RETURNING *").get(todoId, prompt, model, now()) as Row;
-  addEvent(db, todoId, "run-started", { runId: r.id });
+  addEvent(db, todoId, "run-started", { runId: r.id, ...origin });
   return toRun(r);
 }
 export function finishRun(db: Database, id: number, result: { ok: boolean; output: string; error?: string; callId?: number | null; model?: string | null; costUsd?: number | null }): Run {

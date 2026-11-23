@@ -86,6 +86,10 @@
         <svg class="ic th th-dark" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
         <span id="theme-label">跟随系统</span>
       </button>
+      <button type="button" class="sp-btn ghost sm" id="sweep-open" aria-haspopup="dialog" title="定时让 AI 清理还没开始的待办" data-en-title="Let the AI sweep tasks nobody has started, on a schedule">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/><path d="M12 3.5v-1"/></svg>
+        <span id="sweep-label" data-en="Sweep">定时清理</span>
+      </button>
     </div>
   </nav>
 
@@ -294,6 +298,31 @@
   <div class="sp-dialog-foot">
     <button type="button" class="sp-btn" id="ra-cancel" data-en="Cancel">取消</button>
     <button type="button" class="sp-btn-ink" id="ra-start" data-en="Start">开始执行</button>
+  </div>
+</dialog>
+
+<dialog class="sp-dialog sm" id="sweep" aria-labelledby="sw-title">
+  <div class="sp-dialog-head">
+    <h2 class="sp-tt" id="sw-title"><span class="sp-sq" aria-hidden="true"></span><span data-en="Scheduled sweep">定时清理</span><span class="sw-machine" id="sw-machine"></span></h2>
+    <button type="button" class="sp-icon-btn" id="sw-close" title="关闭" aria-label="关闭" data-en-title="Close" data-en-aria="Close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="sp-dialog-body ra-body">
+    <p class="sp-hint" data-en="On a schedule the AI looks at the tasks nobody has started: what it can do it runs (the result waits for your acceptance), what it is unsure of gets a record asking you to decide, what it cannot do is left alone. Tasks tagged #人工 are never touched.">开启后，AI 定时查看还没开始的待办：能做的直接执行，结果进入验收；拿不准的写一条操作记录请你判断；做不了的不动。带 #人工 标签的任务不处理。</p>
+    <label class="sp-switch sw-switch"><span class="grow" data-en="Sweep on a schedule">定时清理</span><input type="checkbox" id="sw-enabled" role="switch"><span class="sp-track"></span></label>
+    <div class="sp-field">
+      <span class="lbl" id="sw-every-label" data-en="Every">间隔</span>
+      <div class="sp-seg in-tile ra-kind" id="sw-every" role="group" aria-labelledby="sw-every-label">
+        <button type="button" data-hours="4" aria-pressed="false" data-en="4 h">4 小时</button>
+        <button type="button" data-hours="8" aria-pressed="false" data-en="8 h">8 小时</button>
+        <button type="button" data-hours="24" aria-pressed="true" data-en="24 h">24 小时</button>
+      </div>
+    </div>
+    <div class="sw-state" id="sw-state" aria-live="polite"></div>
+    <p class="sp-hint" id="sw-perm"></p>
+  </div>
+  <div class="sp-dialog-foot">
+    <button type="button" class="sp-btn" id="sw-done" data-en="Close">关闭</button>
+    <button type="button" class="sp-btn" id="sw-run" title="现在清理一次，不等间隔；开关须开启" data-en-title="Sweep once now, whatever the interval; the switch must be on" data-en="Sweep now">立即清理</button>
   </div>
 </dialog>
 

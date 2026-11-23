@@ -21,6 +21,13 @@ export const config = {
    * commands without asking), `acceptEdits`, `plan`, or `default` for the runtime's read-only headless tier.
    */
   executePermission: env("TODO_EXECUTE_PERMISSION", "bypassPermissions"),
+  /**
+   * What a `code` run started by the scheduled sweep may do, unattended: `acceptEdits` (default: edit files, no
+   * commands that are not pre-approved), `bypassPermissions`, `plan` or `default` (read-only). Research runs are read-only.
+   */
+  sweepPermission: env("TODO_SWEEP_PERMISSION", "acceptEdits"),
+  /** How many executions one sweep starts at most; the rest wait for the next sweep. */
+  sweepMaxRuns: num("TODO_SWEEP_MAX_RUNS", 3),
   /** Wall-clock cap of one execution, seconds. */
   executeTimeoutSec: num("TODO_EXECUTE_TIMEOUT", 600),
   /** Language of the page and of the model's answers. */

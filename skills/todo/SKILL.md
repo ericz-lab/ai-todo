@@ -47,6 +47,7 @@ Adjust these defaults to the discovered app path and port. For a remote service,
 | "退回 / 验收不通过，因为 …" | `todo reject <id> "<reason>"`: the reason is required; it is kept as a record (`验收不通过：…`) and the task goes back to doing. Read it (`todo show <id>`) before working on the task again. |
 | "开始做 / 推迟到周五 / 改成高优先级" | `todo start <id>` or `curl -sS -X PATCH "$TODO_URL/api/todos/<id>" -H 'content-type: application/json' -d '{"due":"YYYY-MM-DD"}'` on the selected host (fields: title, notes, status, priority, due, tags, project; source `cli`). |
 | "让 AI 去做 / 帮我查一下这条" | `todo execute <id> [--extra "…"]`; it streams the model's result and stores it under the task. Minutes and a model call; say so before running unless they asked for it. |
+| "打开定时清理 / 每 8 小时清理一次 / 现在清理一下 / 关掉定时清理" | The scheduled sweep (定时清理), per machine, off by default: `todo sweep` shows the switch, interval, last result and next; `todo sweep on --every 4\|8\|24`, `todo sweep off`; `todo sweep run` sweeps now (the switch must be on) and waits. A sweep looks at `open` tasks only: what the AI can do it executes (at most 3, results go to 验收), what it is unsure of gets one record asking the person, the rest is left alone; tasks tagged `人工` are never touched. Turning it on lets the AI run tasks unattended: say so, and only do it when the person asks. |
 | "记录进展 / 回写验收结果 / 追加操作记录" | `todo record <id> "<content>"`; preserve notes and earlier entries. Include evidence, what was verified and what remains unverified. Use `todo records <id> [--before id]` to read older entries. |
 | "写方案 / 改方案 / 把评估写进方案" | The plan (方案) is the task's design and way of doing it, one Markdown document, always the latest. Write it to a file, then `todo plan <id> --file <path> [--expect <version>]` (`--file -` reads stdin); `todo plan <id>` prints it, `todo plan-history <id> [--version n]` lists or prints old versions. Read it before replacing it, keep what the person wrote, pass the version you read. Progress and acceptance stay in records; notes stay the short description. After writing an evaluation into the plan, append a short record naming the version ("AI 评估已写入方案 v3：需求"). |
 | "改一下那条记录 / 更正记录" | `todo record-edit <id> <record-id> "<content>"`: only to correct a fact; a new conclusion is a new record. The earlier text is kept as a revision and the page marks the record 已编辑. |
@@ -75,6 +76,9 @@ PATCH  /api/todos/:id        any of the fields above; parentId null takes a subt
 DELETE /api/todos/:id
 POST   /api/ai/parse         { text } -> { drafts }
 POST   /api/todos/:id/execute  { extra? } -> text/event-stream
+GET    /api/sweep            { settings { enabled, intervalHours }, running, last { counts, ... }, nextAt, maxRuns, permission }
+PATCH  /api/sweep            { enabled?, intervalHours? (4 | 8 | 24) }
+POST   /api/sweep/run        one sweep now (202; 409 when off or one is running)
 ```
 
 Answers are `{ ok: true, ... }` or `{ ok: false, error }`.

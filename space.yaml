@@ -25,6 +25,8 @@ service:
   # What the operator unit (deploy/app.service) sets with Environment=, so space-<app>.service runs the same.
   env:
     NODE_ENV: "production"
+    # Per-machine settings (TODO_EXECUTE_MODEL, TODO_SWEEP_MAX_RUNS, TODO_SWEEP_PERMISSION, ...) stay out of here: this
+    # block is above the machine's .env, so a value set here could not be changed per machine (.env.example).
 
 # Chat identity on the panel: reads and changes the list through the CLI.
 agents:
@@ -140,6 +142,22 @@ widgets:
     link: /
     size: 2x1
     refresh: 2m
+
+# The scheduled sweep (定时清理, src/sweep.ts). The person turns it on and picks 4, 8 or 24 hours on the page
+# (stored per machine); this tick only asks. The service answers `skipped` while the switch is off, the interval
+# has not passed or a sweep is still running, and answers when a sweep is over: it may start a few executions
+# one after another (TODO_SWEEP_MAX_RUNS, each up to TODO_EXECUTE_TIMEOUT), hence the long timeout.
+tasks:
+  - name: sweep
+    every: 15m
+    timeout: 2h
+    run:
+      http: { method: POST, url: "http://127.0.0.1:${PORT}/jobs/sweep" }
+
+# The triage call of the sweep sorts open tasks into do / unsure / cannot; the other calls keep the space's default.
+model:
+  tags:
+    sweep: junior
 
 storage:
   database: sqlite
