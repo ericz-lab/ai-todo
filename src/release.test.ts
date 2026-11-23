@@ -32,3 +32,10 @@ test("space.release.yaml carries space.yaml's components", async () => {
   // The planner agent runs `bun src/cli.ts` (which prints its chat cards with src/cards.ts): the package must carry both.
   expect((build as { include: string[] }).include).toEqual(expect.arrayContaining(["dist", "src/cli.ts", "src/cards.ts", "agents", "skills", "icon.png"]));
 });
+
+// A Space before ai-space PR 190 validates a package by writing its components out with Bun.YAML.stringify
+// and reading them back; Bun 1.3.0 cannot read " ... " in a quoted string, so such a package fails to install there.
+test("space.release.yaml survives Bun's YAML round trip", async () => {
+  const release = await read("space.release.yaml");
+  expect(Bun.YAML.parse(Bun.YAML.stringify(release))).toEqual(release);
+});
