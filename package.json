@@ -1,6 +1,6 @@
 {
   "name": "ai-todo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A todo list with an AI entry: free text becomes tasks, and a task can be handed to the AI to do. An ai-space app.",
   "license": "MIT",
   "private": true,

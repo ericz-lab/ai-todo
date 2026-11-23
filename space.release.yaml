@@ -7,7 +7,7 @@
 
 spec: 2
 name: ai-todo
-version: 0.1.0
+version: 0.2.0
 title: Todo
 description: A todo list with one AI entry that turns free text into tasks, changes the list on request and plans the day; a task can be handed to the AI to do.
 icon: icon.png
