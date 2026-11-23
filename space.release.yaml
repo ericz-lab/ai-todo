@@ -164,6 +164,23 @@ widgets:
     size: 2x1
     refresh: 2m
 
+# The scheduled sweep (定时清理, src/sweep.ts). The person turns it on and picks 4, 8 or 24 hours on the page
+# (stored per machine); this tick only asks. The service answers `skipped` while the switch is off, the interval
+# has not passed or a sweep is still running, and answers when a sweep is over: it may start a few executions
+# one after another (TODO_SWEEP_MAX_RUNS, each up to TODO_EXECUTE_TIMEOUT), hence the long timeout.
+tasks:
+  - name: sweep
+    every: 15m
+    timeout: 2h
+    run:
+      # A package task names a path: the host finds the service's port and holds it awake for the answer.
+      http: { method: POST, url: /jobs/sweep }
+
+# The triage call of the sweep sorts open tasks into do / unsure / cannot; the other calls keep the space's default.
+model:
+  tags:
+    sweep: junior
+
 storage:
   database: sqlite
   # s3 where the Space has a bucket (the git deployments do), a file store elsewhere.

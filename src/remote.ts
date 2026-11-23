@@ -36,6 +36,8 @@ const ROUTES: [Method[], RegExp][] = [
   [["GET"], /^\/api\/todos\/\d+\/runs$/],
   [["GET"], /^\/api\/runs\/\d+$/],
   [["GET"], /^\/api\/execute\/models$/],
+  [["GET", "PATCH"], /^\/api\/sweep$/],
+  [["POST"], /^\/api\/sweep\/run$/],
   [["POST"], /^\/api\/ai\/(parse|drafts|apply)$/],
   [["GET"], /^\/api\/ai\/context$/],
   [["GET"], /^\/blobs\/[A-Za-z0-9._\/-]+$/],

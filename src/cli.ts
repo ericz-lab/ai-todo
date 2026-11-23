@@ -16,6 +16,8 @@
  *   bun src/cli.ts move <id> <parent-id|none>   make it a subtask of another todo, or take it out
  *   bun src/cli.ts parse <text>         free text -> drafts (printed, not added)
  *   bun src/cli.ts execute <id> [--extra text] [--kind research|code] [--permission p]   hand the todo to the AI, print the result
+ *   bun src/cli.ts sweep [on|off] [--every 4|8|24]   the scheduled sweep (定时清理): its switch, interval and last result
+ *   bun src/cli.ts sweep run                      one sweep now (the switch must be on), waits and prints what it did
  * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
  * package was given (<data dir>/service.port, written by the service at boot), else 8970.
  */
@@ -195,8 +197,37 @@ try {
       }
       break;
     }
+    case "sweep": {
+      type Counts = Record<string, number>;
+      type SweepRow = { id: number; trigger: string; status: string; counts: Counts; error: string | null; startedAt: string; finishedAt: string | null };
+      type Status = { settings: { enabled: boolean; intervalHours: number }; running: SweepRow | null; last: SweepRow | null; nextAt: string | null; maxRuns: number; permission: { research: string; code: string }; configured: boolean };
+      const summary = (w: SweepRow) => `sweep ${w.id} (${w.trigger}) ${w.status} ${w.startedAt}${w.finishedAt ? ` .. ${w.finishedAt}` : ""}\n  open ${w.counts.open ?? 0}; skipped: #人工 ${w.counts.manual ?? 0}, running ${w.counts.running ?? 0}, has steps ${w.counts.hasSteps ?? 0}, parent not active ${w.counts.parentInactive ?? 0}, judged before ${w.counts.seen ?? 0}\n  triaged ${w.counts.triaged ?? 0}: do ${w.counts.do ?? 0} (started ${w.counts.started ?? 0}, ok ${w.counts.ok ?? 0}, failed ${w.counts.failed ?? 0}, over the cap ${w.counts.overCap ?? 0}, changed ${w.counts.changed ?? 0}), unsure ${w.counts.unsure ?? 0}, cannot ${w.counts.cannot ?? 0}, no valid answer ${w.counts.invalid ?? 0}${w.error ? `\n  error: ${w.error}` : ""}`;
+      const show = (st: Status) => {
+        console.log(`scheduled sweep: ${st.settings.enabled ? "on" : "off"}, every ${st.settings.intervalHours} h; at most ${st.maxRuns} runs per sweep; code runs ${st.permission.code}, research runs read-only${st.configured ? "" : " (AI not configured)"}`);
+        if (st.nextAt) console.log(`next: ${st.nextAt}`);
+        if (st.running) console.log(`running: sweep ${st.running.id} since ${st.running.startedAt}`);
+        console.log(st.last ? summary(st.last) : "no sweep yet");
+      };
+      const sub = args[0];
+      if (sub === "run") {
+        const { started } = (await call("/api/sweep/run", { method: "POST" })) as { started: SweepRow };
+        console.log(`sweep ${started.id} started; waiting (each execution may take minutes)`);
+        for (;;) {
+          await Bun.sleep(3000);
+          const st = (await call("/api/sweep")) as unknown as Status;
+          if (st.running?.id !== started.id) { console.log(st.last ? summary(st.last) : "finished"); break; }
+        }
+        break;
+      }
+      const patch: Record<string, unknown> = {};
+      if (sub === "on" || sub === "off") patch.enabled = sub === "on";
+      else if (sub !== undefined) die("usage: sweep [on|off] [--every 4|8|24] | sweep run");
+      if (flags.every) patch.intervalHours = Number(flags.every);
+      show((await call("/api/sweep", Object.keys(patch).length ? { method: "PATCH", body: JSON.stringify(patch) } : {})) as unknown as Status);
+      break;
+    }
     default:
-      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier]");
+      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier] | sweep [on|off] [--every 4|8|24] | sweep run");
   }
 } catch (e) {
   die((e as Error).message);

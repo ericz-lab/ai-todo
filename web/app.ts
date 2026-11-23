@@ -891,7 +891,7 @@ function closeDetail() {
 }
 $("#d-close").onclick = closeDetail;
 els.scrim.onclick = () => closeDrawers();
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#run-ask").open && !$<HTMLDialogElement>("#move-ask").open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.detail.hidden && !plan.full.open && !$<HTMLDialogElement>("#run-ask").open && !$<HTMLDialogElement>("#move-ask").open && !$<HTMLDialogElement>("#sweep").open && !$<HTMLDialogElement>("#image-view").open && document.activeElement?.tagName !== "TEXTAREA") closeDetail(); });
 // A plan typed but not saved yet (the half second, or a conflict waiting for a choice) is worth a warning.
 window.addEventListener("beforeunload", (e) => { if (plan.dirty) { void flushPlan(); e.preventDefault(); } });
 
@@ -1465,7 +1465,9 @@ function renderEvents(events: TodoEvent[]) {
     const version = e.kind === "plan-edited" && e.data.version ? ` · v${esc(String(e.data.version))}` : e.kind === "record-edited" && e.data.revision ? L(` · 记录 ${esc(String(e.data.recordId))} 修订 ${esc(String(e.data.revision))}`, ` · record ${esc(String(e.data.recordId))} revision ${esc(String(e.data.revision))}`) : "";
     const kind = e.kind === "done" && e.data.verdict === "accept" ? L("验收通过", "Accepted") : label[e.kind] ?? esc(e.kind);
     const reason = e.kind === "review-rejected" && e.data.reason ? ` · ${esc(String(e.data.reason).slice(0, 80))}` : "";
-    return `<div><span class="k">${kind}</span>${esc(fmtAgo(e.at))}${src}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}${reason}</div>`;
+    // What the scheduled sweep started or wrote says so.
+    const sweep = e.data.via === "sweep" ? L(" · 定时清理", " · scheduled sweep") : "";
+    return `<div><span class="k">${kind}</span>${esc(fmtAgo(e.at))}${src}${sweep}${version}${changed ? ` · ${esc(changed)}` : ""}${e.data.caller ? ` · ${esc(String(e.data.caller))}` : ""}${e.data.error ? ` · ${esc(String(e.data.error))}` : ""}${reason}</div>`;
   }).join("") || `<div>${L("无", "None")}</div>`;
 }
 
@@ -1510,6 +1512,86 @@ move.start.onclick = async () => {
   } catch (e) { toast((e as Error).message); }
   finally { move.start.disabled = false; }
 };
+
+// ---- the scheduled sweep (定时清理): per machine, its switch, its interval and what the last one did
+type SweepCounts = Record<"open" | "manual" | "running" | "hasSteps" | "parentInactive" | "seen" | "triaged" | "do" | "unsure" | "cannot" | "invalid" | "started" | "ok" | "failed" | "overCap" | "changed", number>;
+type SweepRow = { id: number; trigger: "schedule" | "manual"; status: "running" | "ok" | "error"; counts: SweepCounts; error: string | null; startedAt: string; finishedAt: string | null };
+type SweepState = { settings: { enabled: boolean; intervalHours: number }; running: SweepRow | null; last: SweepRow | null; nextAt: string | null; maxRuns: number; permission: { research: string; code: string }; tickMinutes: number; configured: boolean };
+const sw = {
+  dialog: $<HTMLDialogElement>("#sweep"), enabled: $<HTMLInputElement>("#sw-enabled"), every: $("#sw-every"),
+  state: $("#sw-state"), perm: $("#sw-perm"), run: $<HTMLButtonElement>("#sw-run"), machine: $("#sw-machine"),
+};
+/** The sweep belongs to a machine's list: the one shown (this one on 全部机器). */
+const sweepAt = () => (allMode() ? "" : via);
+let swTimer: ReturnType<typeof setTimeout> | undefined;
+let swRunning: number | null = null;
+const PERMISSION_WORD: Record<string, [string, string]> = { default: ["只读", "read only"], acceptEdits: ["可改文件", "edit files"], bypassPermissions: ["全部权限", "full permission"], plan: ["只读", "read only"] };
+const whenAt = (iso: string) => { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+function showSweep(st: SweepState) {
+  sw.enabled.checked = st.settings.enabled;
+  for (const b of sw.every.querySelectorAll<HTMLElement>("[data-hours]")) b.setAttribute("aria-pressed", String(Number(b.dataset.hours) === st.settings.intervalHours));
+  const line = (k: string, v: string) => `<div><span class="k">${esc(k)}</span>${v}</div>`;
+  const rows: string[] = [];
+  if (!st.configured) rows.push(line(L("注意", "Note"), `<span class="err-text">${L("这台机器没有接上 ai-space 的模型服务，清理不会运行。", "This machine has no ai-space model service; no sweep runs.")}</span>`));
+  if (st.running) rows.push(line(L("进行中", "Running"), L(`${fmtAgo(st.running.startedAt)}开始`, `since ${fmtAgo(st.running.startedAt)}`)));
+  const w = st.last && st.last.status !== "running" ? st.last : null;
+  if (w) {
+    const c = w.counts;
+    const how = w.trigger === "manual" ? L("手动", "manual") : L("定时", "scheduled");
+    const did = L(`看了 ${c.triaged} 条：执行 ${c.started}（成功 ${c.ok}，失败 ${c.failed}${c.overCap ? `，超出上限留到下次 ${c.overCap}` : ""}），待你判断 ${c.unsure}，做不了 ${c.cannot}${c.invalid ? `，未得到有效判断 ${c.invalid}` : ""}`,
+      `looked at ${c.triaged}: ran ${c.started} (${c.ok} ok, ${c.failed} failed${c.overCap ? `, ${c.overCap} left for next time by the cap` : ""}), ${c.unsure} for you to judge, ${c.cannot} it cannot do${c.invalid ? `, ${c.invalid} without a valid verdict` : ""}`);
+    const skipped = c.manual + c.running + c.hasSteps + c.parentInactive + c.seen;
+    rows.push(line(L("上次", "Last"), `${esc(fmtAgo(w.startedAt))} · ${esc(how)} · ${esc(did)}`));
+    if (skipped) rows.push(line(L("跳过", "Skipped"), esc(L(`#人工 ${c.manual}，执行中 ${c.running}，有子任务 ${c.hasSteps}，判断过且未改动 ${c.seen}${c.parentInactive ? `，父任务未在进行 ${c.parentInactive}` : ""}`, `#人工 ${c.manual}, running ${c.running}, has steps ${c.hasSteps}, judged before and unchanged ${c.seen}${c.parentInactive ? `, parent not active ${c.parentInactive}` : ""}`))));
+    if (w.error) rows.push(line(L("错误", "Error"), `<span class="err-text">${esc(w.error)}</span>`));
+  } else if (!st.running) rows.push(line(L("上次", "Last"), L("还没有清理过", "No sweep yet")));
+  rows.push(line(L("下次", "Next"), st.nextAt ? esc(Date.parse(st.nextAt) <= Date.now() ? L(`${st.tickMinutes} 分钟内`, `within ${st.tickMinutes} min`) : whenAt(st.nextAt)) : L("已关闭", "Off")));
+  sw.state.innerHTML = rows.join("");
+  sw.perm.textContent = L(`每次最多执行 ${st.maxRuns} 条，一条接一条。权限：调研只读，写代码${PERMISSION_WORD[st.permission.code]?.[0] ?? st.permission.code}（机器设置 TODO_SWEEP_PERMISSION）。`,
+    `At most ${st.maxRuns} runs per sweep, one after another. Research runs read only; code runs ${PERMISSION_WORD[st.permission.code]?.[1] ?? st.permission.code} (TODO_SWEEP_PERMISSION on the machine).`);
+  sw.run.disabled = !st.settings.enabled || !!st.running || !st.configured;
+  // A sweep that just ended may have started runs and written records: read the list again.
+  if (swRunning !== null && !st.running) void load();
+  swRunning = st.running?.id ?? null;
+  clearTimeout(swTimer);
+  if (st.running && sw.dialog.open) swTimer = setTimeout(() => void loadSweep(), 3000);
+}
+async function loadSweep(init?: RequestInit) {
+  const m = sweepAt();
+  try {
+    const st = await api<SweepState>("/api/sweep", init ?? {}, m);
+    if (m === sweepAt()) showSweep(st);
+  } catch (e) {
+    if (init) throw e;
+    sw.state.innerHTML = `<div class="err-text">${esc((e as Error).message)}</div>`;
+    sw.run.disabled = true;
+  }
+}
+const saveSweep = async (patch: Record<string, unknown>) => {
+  try { await loadSweep({ method: "PATCH", body: JSON.stringify(patch) }); }
+  catch (e) { toast((e as Error).message); void loadSweep(); }
+};
+$("#sweep-open").onclick = () => {
+  const m = sweepAt();
+  sw.machine.textContent = machines.length > 1 ? L(`（${nameOf(m) || "本机"}）`, ` (${nameOf(m) || "this machine"})`) : "";
+  sw.state.textContent = L("读取中…", "Reading…");
+  sw.dialog.showModal();
+  void loadSweep();
+};
+sw.enabled.onchange = () => void saveSweep({ enabled: sw.enabled.checked });
+sw.every.addEventListener("click", (e) => {
+  const h = (e.target as HTMLElement).closest<HTMLElement>("[data-hours]")?.dataset.hours;
+  if (h) void saveSweep({ intervalHours: Number(h) });
+});
+sw.run.onclick = async () => {
+  sw.run.disabled = true;
+  try { await api("/api/sweep/run", { method: "POST" }, sweepAt()); toast(L("已开始清理", "Sweep started")); }
+  catch (e) { toast((e as Error).message); }
+  void loadSweep();
+};
+$("#sw-close").onclick = $("#sw-done").onclick = () => sw.dialog.close();
+sw.dialog.addEventListener("click", (e) => { if (e.target === sw.dialog) sw.dialog.close(); });
+sw.dialog.addEventListener("close", () => clearTimeout(swTimer));
 
 // ---- the dialog before a run: what it does (research or code) and what it may do on the machine
 const ask = {

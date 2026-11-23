@@ -16,6 +16,10 @@ describe("readEnvelope", () => {
     expect(readEnvelope({ method: "GET", path: "/blobs/records/3/1-ab.png" })?.path).toBe("/blobs/records/3/1-ab.png");
     expect(readEnvelope({ method: "POST", path: "/api/todos/3/execute?detach=1" })?.path).toBe("/api/todos/3/execute?detach=1");
     expect(readEnvelope({ method: "GET", path: "/api/execute/models" })?.path).toBe("/api/execute/models");
+    // The hub's page sets a peer's scheduled sweep; the scheduler's own tick is not reachable from another machine.
+    expect(readEnvelope({ method: "PATCH", path: "/api/sweep" })?.path).toBe("/api/sweep");
+    expect(readEnvelope({ method: "POST", path: "/api/sweep/run" })?.path).toBe("/api/sweep/run");
+    expect(readEnvelope({ method: "POST", path: "/jobs/sweep" })).toBeNull();
     expect(readEnvelope({ method: "GET", path: "/api/runs/3/stream" })).toBeNull();
     expect(readEnvelope({ method: "POST", path: "/space/chat/threads" })).toBeNull();
     expect(readEnvelope({ method: "POST", path: "/api/remote" })).toBeNull();
