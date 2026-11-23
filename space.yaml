@@ -95,7 +95,7 @@ provides:
     timeout: 15s
     callers: [space]
   card-undo:
-    description: Undo a chat card, all or nothing per todo. Body { items [{ id, version }] }; a todo still at that version is deleted (its subtasks with it, which must be named too); one changed since answers its current content with changed true; a missing one answers removed. Answers { ok, items [{ id, status, ... }] }.
+    description: Undo a chat card, all or nothing per todo. Body { items [{ id, version }] }; a todo still at that version is deleted (its subtasks with it, which must be named too); one changed since answers its current content with changed true; a missing one answers removed. Answers { ok, items [{ id, status, title, detail, url, version }] }.
     http: { method: POST, path: /api/capabilities/card-undo }
     timeout: 15s
     callers: [space]
