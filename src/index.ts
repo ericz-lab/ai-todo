@@ -468,7 +468,9 @@ export function createServer(opts: ServerOptions) {
   const sweepJob = async (req: Request): Promise<Response> => {
     const trigger: SweepTrigger = req.headers.get("x-space-trigger") === "manual" ? "manual" : "schedule";
     const b = sweeper.begin(trigger);
-    if (!b.ok) return json({ ok: b.status !== "error", status: b.status, error: b.reason });
+    // A skip is planned (switch off, not due, busy): it answers `reason` and no `error`, which is how Space Ops
+    // tells a skip by design from a run that could not start.
+    if (!b.ok) return json(b.status === "error" ? { ok: false, status: b.status, error: b.reason } : { ok: true, status: b.status, reason: b.reason });
     const done = await b.done;
     return json({ ok: done.status === "ok", status: done.status, ...(done.error ? { error: done.error } : {}), sweep: done });
   };

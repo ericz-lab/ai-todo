@@ -82,7 +82,7 @@ describe("scheduled sweep", () => {
     const st = await j("/api/sweep");
     expect(st.body.settings).toEqual({ enabled: false, intervalHours: 24, updatedAt: null });
     expect(st.body.nextAt).toBeNull();
-    expect((await tick()).body).toEqual({ ok: true, status: "skipped", error: "the scheduled sweep is off" });
+    expect((await tick()).body).toEqual({ ok: true, status: "skipped", reason: "the scheduled sweep is off" });
     expect((await tick(true)).body.status).toBe("skipped");
     expect((await j("/api/sweep/run", { method: "POST" })).status).toBe(409);
     expect(calls).toHaveLength(0);
@@ -285,7 +285,7 @@ describe("scheduled sweep", () => {
     clock = new Date(clock.getTime() + 3_600_000);
     const early = await tick();
     expect(early.body).toMatchObject({ ok: true, status: "skipped" });
-    expect(early.body.error).toContain("not due until 2026-11-22T04:00:00.000Z");
+    expect(early.body.reason).toContain("not due until 2026-11-22T04:00:00.000Z");
     expect((await j("/api/sweep")).body.nextAt).toBe("2026-11-22T04:00:00.000Z");
     expect((await tick(true)).body.status).toBe("ok");
     // The manual one counts as the last sweep: the clock starts again from it.
@@ -316,7 +316,7 @@ describe("scheduled sweep", () => {
     expect((await j("/api/sweep/run", { method: "POST" })).status).toBe(409);
     const busy = await tick(true);
     expect(busy.body.status).toBe("skipped");
-    expect(busy.body.error).toContain("still running");
+    expect(busy.body.reason).toContain("still running");
     expect((await j("/api/sweep")).body.running.id).toBe(started.body.started.id);
     release();
     for (let i = 0; i < 100 && (await j("/api/sweep")).body.running; i++) await Bun.sleep(10);
