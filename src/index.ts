@@ -630,7 +630,7 @@ export function createServer(opts: ServerOptions) {
           const b = await body(req);
           const ids = cardIds(b.ids);
           if (!ids) return fail(`ids must be a list of 1 to ${CARD_MAX} todo ids`);
-          const items: CardItemState[] = ids.map((id) => { const t = getTodo(db, id); return t ? itemState(t, lang) : { id: String(id), status: "removed" }; });
+          const items: CardItemState[] = ids.map((id) => { const t = getTodo(db, id); return t ? itemState(t, { now: now(), timezone: defaultTz }, lang) : { id: String(id), status: "removed" }; });
           return json({ ok: true, items });
         },
       },
@@ -642,7 +642,7 @@ export function createServer(opts: ServerOptions) {
           if (!ids || ids.length !== list.length) return fail(`items must be 1 to ${CARD_MAX} { id, version? }`);
           const items = list.map((i, n) => { const v = (i as { version?: unknown }).version; return { id: ids[n]!, ...(Number.isInteger(v) ? { version: v as number } : {}) }; });
           const done = undoTodos(db, items, "chat", { via: "card-undo", ...caller(req) });
-          return json({ ok: true, items: done.map((r): CardItemState => (r.removed ? { id: String(r.id), status: "removed" } : { ...itemState(r.todo, lang), changed: true })) });
+          return json({ ok: true, items: done.map((r): CardItemState => (r.removed ? { id: String(r.id), status: "removed" } : { ...itemState(r.todo, { now: now(), timezone: defaultTz }, lang), changed: true })) });
         },
       },
       // `list` for other apps (space.yaml `provides.list`): tasks with their latest records, for a page that

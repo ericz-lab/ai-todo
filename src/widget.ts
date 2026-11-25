@@ -7,7 +7,10 @@
  */
 import type { Database } from "bun:sqlite";
 import { countTodos, listTodos } from "./db.ts";
+import { addDays, localClock } from "./dates.ts";
 import type { Todo } from "./types.ts";
+
+export { localClock };
 
 type Text = { en: string; zh: string };
 type Tone = "positive" | "negative" | "warning" | "neutral";
@@ -24,26 +27,6 @@ const ROWS_AFTER_TREND = 2;
 const TREND_DAYS = 7;
 /** The panel refreshes every two minutes; ten without a fresh answer means the service is gone. */
 export const STALE_AFTER_S = 600;
-
-/** `now` as a local wall-clock string `YYYY-MM-DDTHH:MM` in `timezone`, the shape `due` is stored in. */
-/** One formatter per zone: building an Intl.DateTimeFormat costs far more than using one (the trend reads one per event). */
-const clocks = new Map<string, Intl.DateTimeFormat>();
-export function localClock(now: Date, timezone: string): string {
-  let fmt = clocks.get(timezone);
-  if (!fmt) {
-    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-    clocks.set(timezone, fmt);
-  }
-  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-}
-
-/** `YYYY-MM-DD` shifted by `n` calendar days. */
-const addDays = (day: string, n: number): string => {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
 
 /** Where a due date stands against the local clock. */
 export function dueState(due: string | null, clock: string): "overdue" | "today" | "later" | "none" {
