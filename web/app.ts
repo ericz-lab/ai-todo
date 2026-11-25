@@ -353,6 +353,17 @@ const syncUrl = () => {
   history.replaceState(null, "", s ? `?${s}` : location.pathname);
 };
 const setView = (v: View) => { view = v; syncUrl(); };
+/**
+ * The address of a todo's detail: ids are per machine, so it names the machine too (`m`, and in the
+ * all-machines view `at`); a link opened in another browser, with no machine remembered, reaches the same todo.
+ */
+const todoQuery = (id: number): string => {
+  const q = new URLSearchParams();
+  if (via) q.set("m", via);
+  if (allMode() && detailVia) q.set("at", detailVia);
+  q.set("todo", String(id));
+  return `?${q}`;
+};
 
 // ---- sidebar
 const isToday = (t: Item) => t.status === "doing" || (!!t.due && dayOf(t.due) <= todayStr());
@@ -846,8 +857,8 @@ async function openDetail(id: number, execute = false) {
   d.recordContent.value = recordDrafts.get(id) ?? "";
   renderRecordImages();
   showDetailEl(true);
-  // In the all-machines view the address names the todo's machine too (`at`), so a reload opens the same one.
-  history.replaceState(null, "", allMode() ? `?${new URLSearchParams({ m: ALL, ...(detailVia ? { at: detailVia } : {}), todo: String(id) })}` : `?todo=${id}`);
+  // The address names the todo's machine too, so a reload or another browser opens the same one.
+  history.replaceState(null, "", todoQuery(id));
   const running = r.runs.find((x) => x.status === "running");
   if (!running && aiRuns.delete(runKey(id))) renderList();
   if (running) followRun(`/api/runs/${running.id}/stream`, {});
@@ -1132,7 +1143,7 @@ function renderSubs(parent: Todo | null, subs: Todo[]) {
   const done = subs.filter((s) => s.status === "done").length;
   d.subsN.textContent = isSub ? "" : subs.length ? `${done}/${subs.length}` : "";
   if (isSub) {
-    d.parent.innerHTML = `${L("属于", "Step of")} <a href="?todo=${cur!.parentId}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button type="button" class="sp-btn sm" data-op="detach">${L("移出", "Detach")}</button>`;
+    d.parent.innerHTML = `${L("属于", "Step of")} <a href="${esc(todoQuery(cur!.parentId!))}" data-open="${cur!.parentId}">${esc(parent?.title ?? `#${cur!.parentId}`)}</a> <button type="button" class="sp-btn sm" data-op="detach">${L("移出", "Detach")}</button>`;
     $<HTMLElement>("[data-open]", d.parent).onclick = (e) => { e.preventDefault(); void openDetail(cur!.parentId!); };
     $<HTMLElement>("[data-op=detach]", d.parent).onclick = () => void patchSub(cur!.id, { parentId: null }, L("已移出，成为独立任务", "Detached: now a task of its own"));
     return;
