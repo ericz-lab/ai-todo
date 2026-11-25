@@ -22,6 +22,7 @@
  * package was given (<data dir>/service.port, written by the service at boot), else 8970.
  */
 import { cardLine, receiptCards } from "./cards.ts";
+import { appZone } from "./config.ts";
 
 const portFile = process.env.SPACE_APP_DATA_DIR ? Bun.file(`${process.env.SPACE_APP_DATA_DIR}/service.port`) : undefined;
 const assignedPort = portFile && (await portFile.exists()) ? (await portFile.text()).trim() : undefined;
@@ -138,7 +139,7 @@ try {
       }
       for (const t of todos) console.log(line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : ""));
       // The chat card of what was just added; outside a chat it is one more line to ignore.
-      for (const card of receiptCards(todos, process.env.TODO_LANG)) console.log(cardLine(card));
+      for (const card of receiptCards(todos, { now: new Date(), timezone: appZone() }, process.env.TODO_LANG)) console.log(cardLine(card));
       break;
     }
     case "move": {
