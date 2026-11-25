@@ -1,6 +1,9 @@
 /**
  * Command line over the running service, for the `planner` agent and for the shell:
- *   bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p]
+ *   bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] [--no-card]
+ *     Prints the todos, then a `::space-card` list card (the first 20; ai-space docs/chat-cards.md) the chat shows
+ *     as the list. `--no-card` leaves the card out, for reading the list to do something else (a duplicate check,
+ *     finding an id). Never pipe it through `| head` or `| grep`: the card line comes last.
  *   bun src/cli.ts record <id> <content> | records <id> [--before id]
  *   bun src/cli.ts record-edit <id> <record-id> <content> [--file path] [--expect revision]   correct a record; the old text is kept
  *   bun src/cli.ts plan <id>                                      print the plan (方案)
@@ -21,7 +24,7 @@
  * The base URL is TODO_URL, else http://127.0.0.1 with the port from PORT, else the port an installed
  * package was given (<data dir>/service.port, written by the service at boot), else 8970.
  */
-import { cardLine, receiptCards } from "./cards.ts";
+import { cardLine, listCard, receiptCards, type ListQuery } from "./cards.ts";
 import { appZone } from "./config.ts";
 
 const portFile = process.env.SPACE_APP_DATA_DIR ? Bun.file(`${process.env.SPACE_APP_DATA_DIR}/service.port`) : undefined;
@@ -30,9 +33,12 @@ const base = (process.env.TODO_URL ?? `http://127.0.0.1:${process.env.PORT ?? as
 const [cmd, ...rest] = process.argv.slice(2);
 const flags: Record<string, string> = {};
 const args: string[] = [];
+/** Flags that take no value: `list --done --tag x` must not read `--tag` as the value of `--done`. */
+const SWITCHES = new Set(cmd === "list" ? ["all", "done", "review", "deferred", "no-card"] : []);
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i]!;
-  if (a.startsWith("--")) { flags[a.slice(2)] = rest[i + 1] ?? ""; i++; } else args.push(a);
+  if (a.startsWith("--") && SWITCHES.has(a.slice(2))) flags[a.slice(2)] = "";
+  else if (a.startsWith("--")) { flags[a.slice(2)] = rest[i + 1] ?? ""; i++; } else args.push(a);
 }
 const die = (msg: string): never => { console.error(msg); process.exit(1); };
 /** A long text from a file, or from standard input with `-`: no shell quoting to get wrong. */
@@ -49,17 +55,24 @@ const line = (t: Todo, indent = "") => `#${t.id}\t${t.status}\t${t.due ?? "-"}\t
 try {
   switch (cmd) {
     case "list": {
-      const q = new URLSearchParams({ status: "all" in flags ? "all" : "done" in flags ? "done" : "review" in flags ? "review" : "deferred" in flags ? "deferred" : "active" });
-      for (const k of ["q", "tag", "project"]) if (flags[k]) q.set(k, flags[k]!);
-      const { todos } = (await call(`/api/todos?${q}`)) as { todos: Todo[] };
+      const status: ListQuery["status"] = "all" in flags ? "all" : "done" in flags ? "done" : "review" in flags ? "review" : "deferred" in flags ? "deferred" : "active";
+      // limit: the service's own cap, asked for explicitly so the answer says how many matched in all.
+      const q = new URLSearchParams({ status, limit: "500" });
+      for (const k of ["q", "tag", "project"] as const) if (flags[k]) q.set(k, flags[k]!);
+      const { todos, total } = (await call(`/api/todos?${q}`)) as { todos: Todo[]; total?: number };
       if (!todos.length) console.log("(none)");
       // Subtasks under their parent when both are listed; a subtask alone names its parent.
       const ids = new Set(todos.map((t) => t.id));
+      const shown: Todo[] = [];
       for (const t of todos) {
         if (t.parentId && ids.has(t.parentId)) continue;
         console.log(line(t) + (t.parentId ? ` (subtask of #${t.parentId})` : ""));
-        for (const s of todos) if (s.parentId === t.id) console.log(line(s, "  ↳ "));
+        shown.push(t);
+        for (const s of todos) if (s.parentId === t.id) { console.log(line(s, "  ↳ ")); shown.push(s); }
       }
+      // The chat card of the listing, in the order printed; none for an empty one or with --no-card.
+      const card = "no-card" in flags ? null : listCard(shown, { status, q: flags.q || undefined, tag: flags.tag || undefined, project: flags.project || undefined }, total ?? todos.length, { now: new Date(), timezone: appZone() }, process.env.TODO_LANG);
+      if (card) console.log(cardLine(card));
       break;
     }
     case "show": {
@@ -228,7 +241,7 @@ try {
       break;
     }
     default:
-      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier] | sweep [on|off] [--every 4|8|24] | sweep run");
+      console.log("usage: list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] [--no-card] | show <id> | record <id> <content> | records <id> [--before id] | record-edit <id> <record-id> <content> [--file path] [--expect revision] | plan <id> [--set text | --file path|-] [--expect version] | plan-history <id> [--version n] | add <title> [--due d] [--priority n] [--tags a,b] [--project p] [--notes text] [--parent id] | add --drafts <file|-> [--parent id] | done <id> | start <id> | review <id> | accept <id> | reject <id> <reason> | defer <id> | reopen <id> | rm <id> | move <id> <parent-id|none> | parse <text> | execute <id> [--extra text] [--kind research|code] [--permission default|acceptEdits|bypassPermissions|plan] [--model runtime/tier] | sweep [on|off] [--every 4|8|24] | sweep run");
   }
 } catch (e) {
   die((e as Error).message);

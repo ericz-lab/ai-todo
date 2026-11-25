@@ -103,7 +103,7 @@ Without `SPACE_API_URL` and `SPACE_APP_TOKEN` the list works and every AI featur
 CLI over the running service (also what the `planner` agent uses):
 
 ```bash
-bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p]
+bun src/cli.ts list [--all|--done|--review|--deferred] [--q text] [--tag t] [--project p] [--no-card]   # --no-card: no chat card
 bun src/cli.ts add "订机票" --due 2026-09-26 --priority 2 --tags 出差
 bun src/cli.ts add "订酒店" --parent 3                 # a subtask of #3
 echo '[{"title":"订机票"},{"title":"订酒店"}]' | bun src/cli.ts add --drafts -   # several at once
