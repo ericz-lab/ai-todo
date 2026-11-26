@@ -31,6 +31,16 @@ test("space.release.yaml carries space.yaml's components", async () => {
   expect(build).toMatchObject({ run: "bun run build" });
   // The planner agent runs `bun src/cli.ts` (which prints its chat cards with src/cards.ts): the package must carry both.
   expect((build as { include: string[] }).include).toEqual(expect.arrayContaining(["dist", "src/cli.ts", "src/cards.ts", "agents", "skills", "icon.png"]));
+  // And every module those load at run time (a type-only import is erased).
+  const needed = new Set<string>();
+  const walk = async (file: string) => {
+    if (needed.has(file)) return;
+    needed.add(file);
+    const text = await Bun.file(join(root, file)).text();
+    for (const m of text.matchAll(/^import (?!type )[^;]*?from "\.\/([^"]+)";/gm)) await walk(`src/${m[1]}`);
+  };
+  await walk("src/cli.ts");
+  expect((build as { include: string[] }).include).toEqual(expect.arrayContaining([...needed]));
 });
 
 // A Space before ai-space PR 190 validates a package by writing its components out with Bun.YAML.stringify

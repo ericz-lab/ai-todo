@@ -40,8 +40,9 @@ Adjust these defaults to the discovered app path and port. For a remote service,
 | The person says | Do |
 | --- | --- |
 | "记一下 / 加个待办 / 帮我记着 …" | `todo parse "<their words>"` shows what the model makes of it (dates resolved, tags, priority); then `todo add "<title>" [--due …] [--priority …] [--tags …] [--project …]` for each draft. Read the drafts back to the person with the dates you used. Without the model (parse fails), add the plain titles and say the dates were not set. |
+| "看看我的待办 / 还有几条 / 列一下" | `todo list` (or `--review`, `--deferred`, `--done`, `--tag`, `--project`): in a chat the list shows as a card under the answer (the first 20), so do not read the items back; say the count and anything notable in a sentence. |
 | "今天要做什么 / 明天要干嘛 / 安排一下" | `todo list`, then order by due, priority and what is `doing`; answer with ids, short. |
-| "XX 完成了 / 做完了 3" | `todo done <id>`; find the id with `todo list --q <text>` when they name the task. When the person says it, it is done; when you finished the work, hand it over instead (next row). |
+| "XX 完成了 / 做完了 3" | `todo done <id>`; find the id with `todo list --q <text> --no-card` when they name the task. When the person says it, it is done; when you finished the work, hand it over instead (next row). |
 | You (an agent) finished a task that was `doing` | `todo review <id>` (验收), not `done`: the person accepts or rejects it. Append a record with what was done and verified first. |
 | "验收通过 / 可以了"（task in review） | `todo accept <id>`: done, with its unfinished subtasks. `todo list --review` lists what waits for acceptance. |
 | "退回 / 验收不通过，因为 …" | `todo reject <id> "<reason>"`: the reason is required; it is kept as a record (`验收不通过：…`) and the task goes back to doing. Read it (`todo show <id>`) before working on the task again. |
@@ -53,6 +54,8 @@ Adjust these defaults to the discovered app path and port. For a remote service,
 | "改一下那条记录 / 更正记录" | `todo record-edit <id> <record-id> "<content>"`: only to correct a fact; a new conclusion is a new record. The earlier text is kept as a revision and the page marks the record 已编辑. |
 | "删掉 …" | `todo rm <id>`, after confirming which one; it takes the subtasks with it, say so. |
 | "拆成几步 / 放到 X 下面 / 这几个是 X 的子任务" | Subtasks, one level deep: `todo add "<step>" --parent <id>` for a new one, `todo move <id> <parent-id>` for an existing one (`none` takes it out). A task with subtasks cannot become one, a subtask cannot have its own. `todo done <parent>` also finishes its open subtasks. |
+
+`todo list` prints, after its lines, a `::space-card` line that a chat shows as the list; `todo add` prints one that shows what was added with Undo. When you read the list only to do something else (a duplicate check before an add, finding an id from a name), use `todo list --no-card`. Never pipe `list` or `add` through `| head`, `| grep` or the like: the card line comes at the end and would be lost.
 
 Dates are the person's local wall clock, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; resolve "明天" and "周五" using the person's timezone and current date, not a remote server's timezone, and say the date you used. `todo show <id>` gives notes, the plan, the parent or the subtasks, records, AI runs; `todo list` prints subtasks indented under their task.
 

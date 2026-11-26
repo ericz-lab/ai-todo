@@ -47,7 +47,7 @@ launch:
 build:
   install: bun install --frozen-lockfile
   run: bun run build
-  include: [dist, icon.png, src/cli.ts, src/cards.ts, agents, skills]
+  include: [dist, icon.png, src/cli.ts, src/cards.ts, src/dates.ts, src/config.ts, agents, skills]
 
 # Chat identity on the panel: reads and changes the list through the CLI.
 agents:
