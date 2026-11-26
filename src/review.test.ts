@@ -282,14 +282,14 @@ describe("review for the AI and the panel", () => {
     expect(() => cleanAction({ op: "reject", id: 2 })).toThrow("reason");
     expect(executePrompt(t(2, "review"), { now: new Date(), timezone: "UTC", lang: "zh" })).toContain("awaiting the person's acceptance");
   });
-  test("the panel card says how many wait for acceptance and links the view", () => {
+  test("the panel card is the review list: it counts and lists what waits for acceptance and links the view", () => {
     const db = openDb(":memory:");
     createTodo(db, { title: "open one" });
     const r = createTodo(db, { title: "finished" });
     updateTodo(db, r.id, { status: "review" });
     const p = widgetPayload(db, { now: new Date("2026-10-25T00:00:00Z"), timezone: "Asia/Shanghai" });
-    expect(p.blocks[0]).toMatchObject({ caption: { zh: "未完成 1 · 待验收 1" } });
-    expect(p.blocks[1]).toEqual({ type: "status", label: "待验收", value: { en: "1 awaiting acceptance", zh: "1 项等你验收" }, tone: "warning", url: "/?view=review" });
-    expect(p.items.map((i) => i.text)).toEqual(["open one"]);
+    expect(p.blocks[0]).toEqual({ type: "metric", label: { en: "Awaiting review", zh: "待验收" }, value: 1, tone: "warning", url: "/?view=review" });
+    expect(p.blocks[1]).toMatchObject({ type: "status", label: "finished", value: { en: "Submitted", zh: "已提交" }, url: `/?todo=${r.id}` });
+    expect(p.items.map((i) => i.text)).toEqual(["finished"]);
   });
 });

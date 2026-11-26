@@ -464,7 +464,7 @@ export function createServer(opts: ServerOptions) {
     const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
     try { if (origin && new URL(origin).host !== host) return fail("writes must come from this app's page", 403); } catch { return fail("writes must come from this app's page", 403); }
     try {
-      const r = widgetAction(db, await body(req), { change: changeTodo, origin: caller(req) });
+      const r = widgetAction(db, await body(req), { origin: caller(req) });
       return json(r.body, r.status);
     } catch (e) { return fail((e as Error).message); }
   };

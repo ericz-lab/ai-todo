@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { addEvent, createTodo, getTodo, listEvents, openDb, updateTodo } from "./db.ts";
-import type { Patch, Source } from "./types.ts";
 import { ADD_MAX, completionsByDay, dueState, localClock, widgetAction, widgetPayload } from "./widget.ts";
 
 // 2026-10-08 10:30 in Shanghai.
@@ -24,61 +23,60 @@ describe("clock and due", () => {
 });
 
 describe("widget payload", () => {
-  test("hero counts what is due by today, overdue tones it; rows are the next tasks with the trend after three", () => {
+  test("the review list: a hero counting it, a row per task with an Accept check, the trend last", () => {
     const db = openDb(":memory:");
-    const late = createTodo(db, { title: "Pay rent", due: "2026-10-06" });
-    const today = createTodo(db, { title: "Call bank", due: "2026-10-08T18:00" });
-    const doing = createTodo(db, { title: "Write report", priority: 3 });
-    updateTodo(db, doing.id, { status: "doing" });
-    createTodo(db, { title: "Book flight", due: "2026-10-09T09:00" });
-    createTodo(db, { title: "Read book", due: "2027-01-02" });
-    createTodo(db, { title: "Someday" });
+    createTodo(db, { title: "Pay rent", due: "2026-10-06" }); // open, overdue: not on this card
+    const byAi = createTodo(db, { title: "Write report", project: "Work", due: "2026-10-09" });
+    updateTodo(db, byAi.id, { status: "review" }, "ai", { runId: 4 });
+    const bySweep = createTodo(db, { title: "Fix tests" });
+    updateTodo(db, bySweep.id, { status: "review" }, "ai", { runId: 5, via: "sweep" });
+    const byMe = createTodo(db, { title: "Book flight", due: "2026-10-08" });
+    updateTodo(db, byMe.id, { status: "review" });
+    const byAgent = createTodo(db, { title: "Draft spec" });
+    updateTodo(db, byAgent.id, { status: "review" }, "cli");
     const finished = createTodo(db, { title: "Old" });
     updateTodo(db, finished.id, { status: "done" });
 
     const p = widgetPayload(db, { now, timezone: tz, publicBase: "https://todo.test" });
-    expect(p.ok).toBe(true);
-    expect(p.asOf).toBe("2026-10-08T02:30:00.000Z");
-    expect(p.staleAfter).toBe(600);
-    // The list stays as it was, for a panel without blocks.
-    expect(p.items[0]).toMatchObject({ text: "▶ ‼ Write report", url: `https://todo.test/?todo=${doing.id}` });
-    expect(p.items).toHaveLength(6);
-
-    const [hero, ...rows] = p.blocks;
-    expect(hero).toEqual({
-      type: "metric", label: { en: "Due by today", zh: "今天到期" }, value: 2,
-      caption: { en: "1 overdue · 6 open", zh: "逾期 1 · 未完成 6" }, tone: "negative", url: "/",
+    expect(p).toMatchObject({ ok: true, asOf: "2026-10-08T02:30:00.000Z", staleAfter: 600 });
+    // The review list's own order: due first (earliest), then the rest.
+    expect(p.items.map((i) => i.text)).toEqual(["Book flight", "Write report", "Fix tests", "Draft spec"]);
+    expect(p.items[0]).toMatchObject({ url: `https://todo.test/?todo=${byMe.id}` });
+    expect(p.blocks[0]).toEqual({ type: "metric", label: { en: "Awaiting review", zh: "待验收" }, value: 4, tone: "warning", url: "/?view=review" });
+    expect(p.blocks.map((b) => b.type)).toEqual(["metric", "status", "status", "status", "status", "trend"]);
+    const accept = (id: number) => ({ id: `done:${id}`, kind: "check" as const, label: { en: "Accept", zh: "验收通过" } });
+    expect(p.blocks[1]).toEqual({
+      type: "status", label: "Book flight", value: { en: "Submitted", zh: "已提交" }, tone: "warning",
+      time: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/), url: `/?todo=${byMe.id}`, action: accept(byMe.id),
     });
-    expect(p.blocks.length).toBeLessThanOrEqual(12);
-    expect(rows.map((b) => b.type)).toEqual(["status", "status", "status", "trend", "status", "status", "status"]);
-    expect(rows[0]).toEqual({
-      type: "status", label: "Write report", value: { en: "Doing · High", zh: "进行中 · 高优先级" }, tone: "neutral", url: `/?todo=${doing.id}`,
-      action: { id: `done:${doing.id}`, kind: "check", label: { en: "Mark done", zh: "标记完成" } },
-    });
-    expect(rows[1]).toMatchObject({ label: "Pay rent", value: { en: "Overdue · 10-06", zh: "逾期 · 10-06" }, tone: "negative", url: `/?todo=${late.id}` });
-    expect(rows[2]).toMatchObject({ label: "Call bank", value: { en: "Today 18:00", zh: "今天 18:00" }, tone: "warning", url: `/?todo=${today.id}` });
-    expect(rows[4]).toMatchObject({ label: "Book flight", value: { en: "Tomorrow 09:00", zh: "明天 09:00" }, tone: "neutral" });
-    expect(rows[5]).toMatchObject({ label: "Read book", value: { en: "2027-01-02", zh: "2027-01-02" } });
-    expect(rows[6]).toMatchObject({ label: "Someday", value: { en: "No due date", zh: "无截止" } });
-    expect(rows[3]).toMatchObject({ type: "trend", style: "bar", label: { en: "Done, last 7 days", zh: "近 7 天完成" } });
+    expect(p.blocks[2]).toMatchObject({ label: "Write report", value: { en: "AI finished · Work", zh: "AI 完成 · Work" }, action: accept(byAi.id) });
+    expect(p.blocks[3]).toMatchObject({ label: "Fix tests", value: { en: "AI finished · sweep", zh: "AI 完成 · 定时清理" } });
+    expect(p.blocks[4]).toMatchObject({ label: "Draft spec", value: { en: "Submitted by an agent", zh: "智能体提交" } });
+    expect(p.blocks[5]).toMatchObject({ type: "trend", style: "bar", label: { en: "Done, last 7 days", zh: "近 7 天完成" } });
   });
 
-  test("nothing due today: the caption names the next due date", () => {
+  test("nothing in review: the hero says so, no tone; the trend stays", () => {
     const db = openDb(":memory:");
-    createTodo(db, { title: "Book flight", due: "2026-10-10T09:00" });
-    createTodo(db, { title: "Someday" });
-    const [hero] = widgetPayload(db, { now, timezone: tz }).blocks;
-    expect(hero).toMatchObject({ value: 0, tone: "neutral", caption: { en: "2 open · next due 10-10 09:00", zh: "未完成 2 · 下个截止 10-10 09:00" } });
-  });
-
-  test("empty list: a compact card, the trend only when something was finished", () => {
-    const db = openDb(":memory:");
-    expect(widgetPayload(db, { now, timezone: tz }).blocks).toHaveLength(1);
-    const t = createTodo(db, { title: "Done thing" });
-    updateTodo(db, t.id, { status: "done" });
-    const p = widgetPayload(db, { now: new Date(), timezone: tz });
+    createTodo(db, { title: "Someday", due: "2026-10-08" });
+    const p = widgetPayload(db, { now, timezone: tz });
     expect(p.items).toEqual([]);
     expect(p.blocks.map((b) => b.type)).toEqual(["metric", "trend"]);
+    expect(p.blocks[0]).toEqual({ type: "metric", label: { en: "Awaiting review", zh: "待验收" }, value: 0, caption: { en: "Nothing to review", zh: "没有待验收的任务" }, url: "/?view=review" });
+  });
+
+  test("ten rows at most, twelve blocks; the hero counts them all; a subtask follows its parent", () => {
+    const db = openDb(":memory:");
+    const parent = createTodo(db, { title: "Parent" });
+    const kid = createTodo(db, { title: "Kid", parentId: parent.id });
+    for (let i = 1; i <= 12; i++) { const t = createTodo(db, { title: `T${i}` }); updateTodo(db, t.id, { status: "review" }); }
+    updateTodo(db, kid.id, { status: "review" });
+    updateTodo(db, parent.id, { status: "review" });
+    const p = widgetPayload(db, { now, timezone: tz });
+    expect(p.blocks).toHaveLength(12);
+    expect(p.blocks[0]).toMatchObject({ value: 14 });
+    const labels = p.items.map((i) => i.text);
+    expect(labels.indexOf("Kid")).toBe(labels.indexOf("Parent") + 1);
+    expect(p.items).toHaveLength(14);
   });
 });
 
@@ -105,71 +103,60 @@ function actionsOf(p: ReturnType<typeof widgetPayload>) {
 
 describe("widget actions", () => {
   const ID = /^[A-Za-z0-9._:-]{1,128}$/;
-  const change = (db: ReturnType<typeof openDb>) => (id: number, patch: Patch, src: Source, origin: Record<string, unknown>) => updateTodo(db, id, patch, src, origin);
 
-  test("payload: one input on the card, a check on each task row (eight at most), ids unique and valid", () => {
+  test("payload: one input on the card, an Accept check per review row, ids unique and valid", () => {
     const db = openDb(":memory:");
-    for (let i = 1; i <= 10; i++) createTodo(db, { title: `Task ${i}`, due: i === 1 ? "2026-10-07" : i === 2 ? "2026-10-08" : null });
-    const review = createTodo(db, { title: "Check me" });
-    updateTodo(db, review.id, { status: "review" });
+    for (let i = 1; i <= 3; i++) { const t = createTodo(db, { title: `Task ${i}` }); updateTodo(db, t.id, { status: "review" }); }
+    createTodo(db, { title: "Open one" });
     const p = widgetPayload(db, { now, timezone: tz });
     const a = actionsOf(p);
-    expect(p.blocks.length).toBeLessThanOrEqual(12);
-    // The order an older panel knows: hero, the review row, three tasks, the trend, then more tasks.
-    expect(p.blocks.map((b) => b.type)).toEqual(["metric", "status", "status", "status", "status", "trend", "status", "status", "status", "status", "status"]);
-    expect(p.blocks[1]).not.toHaveProperty("action");
     expect(a.card).toEqual([{ id: "add", kind: "input", label: { en: "Add", zh: "添加" }, placeholder: { en: "Add a task…", zh: "添加待办…" } }]);
     expect(a.card.length).toBeLessThanOrEqual(3);
     expect(a.card.filter((x) => x.kind === "input")).toHaveLength(1);
     expect(a.card.every((x) => x.kind === "input" || x.kind === "button")).toBe(true);
-    expect(a.blocks).toHaveLength(8);
-    expect(a.blocks.every((x) => x.kind === "check" && x.label.en === "Mark done" && x.label.zh === "标记完成")).toBe(true);
+    expect(a.blocks.map((x) => x.id)).toEqual(["done:1", "done:2", "done:3"]);
+    expect(a.blocks.every((x) => x.kind === "check" && x.label.en === "Accept" && x.label.zh === "验收通过")).toBe(true);
     expect(a.all.every((x) => ID.test(x.id))).toBe(true);
     expect(new Set(a.all.map((x) => x.id)).size).toBe(a.all.length);
-    // Overdue and due today lead, in the app's own order, toned as before.
-    expect(p.blocks[2]).toMatchObject({ label: "Task 1", tone: "negative", action: { id: `done:1` } });
-    expect(p.blocks[3]).toMatchObject({ label: "Task 2", tone: "warning", action: { id: `done:2` } });
   });
 
-  test("done: through the completion path, with the subtasks, idempotent", () => {
+  test("done: accepts a task in review through reviewTodo, with its subtasks; idempotent", () => {
     const db = openDb(":memory:");
-    const t = createTodo(db, { title: "Parent" });
+    const t = createTodo(db, { title: "Built" });
     const sub = createTodo(db, { title: "Step", parentId: t.id });
-    const r = widgetAction(db, { action: `done:${t.id}` }, { change: change(db), origin: { caller: "space" } });
-    expect(r).toMatchObject({ status: 200, body: { ok: true, message: { en: "Done", zh: "已完成" } } });
+    updateTodo(db, t.id, { status: "review" });
+    const r = widgetAction(db, { action: `done:${t.id}` }, { origin: { caller: "space" } });
+    expect(r).toMatchObject({ status: 200, body: { ok: true, message: { en: "Accepted", zh: "已验收" } } });
     expect(getTodo(db, t.id)!.status).toBe("done");
     expect(getTodo(db, sub.id)!.status).toBe("done");
-    expect(listEvents(db, t.id)[0]).toMatchObject({ kind: "done", data: { source: "manual", via: "widget", caller: "space" } });
-    const again = widgetAction(db, { action: `done:${t.id}` }, { change: change(db), origin: {} });
-    expect(again).toMatchObject({ status: 200, body: { ok: true } });
+    expect(listEvents(db, t.id)[0]).toMatchObject({ kind: "done", data: { source: "manual", verdict: "accept" } });
+    expect(widgetAction(db, { action: `done:${t.id}` }, { origin: {} })).toMatchObject({ status: 200, body: { ok: true } });
     expect(listEvents(db, t.id).filter((e) => e.kind === "done")).toHaveLength(1);
   });
 
-  test("done on a task in review accepts it, as the row's check does", () => {
+  test("done on a task not in review completes nothing", () => {
     const db = openDb(":memory:");
-    const t = createTodo(db, { title: "Built" });
-    updateTodo(db, t.id, { status: "review" });
-    expect(widgetAction(db, { action: `done:${t.id}` }, { change: change(db), origin: {} }).body.ok).toBe(true);
-    expect(getTodo(db, t.id)!.status).toBe("done");
-    expect(listEvents(db, t.id)[0]).toMatchObject({ kind: "done", data: { verdict: "accept" } });
+    const deps = { origin: {} };
+    for (const status of ["open", "doing", "deferred", "dropped"] as const) {
+      const t = createTodo(db, { title: status });
+      if (status !== "open") updateTodo(db, t.id, { status });
+      expect(widgetAction(db, { action: `done:${t.id}` }, deps)).toEqual({ status: 409, body: { ok: false, error: "not awaiting review" } });
+      expect(getTodo(db, t.id)!.status).toBe(status);
+    }
   });
 
-  test("unknown actions, bad ids, missing and dropped tasks are refused", () => {
+  test("unknown actions, bad ids and missing tasks are refused", () => {
     const db = openDb(":memory:");
-    const dropped = createTodo(db, { title: "Gone" });
-    updateTodo(db, dropped.id, { status: "dropped" });
-    const deps = { change: change(db), origin: {} };
+    const deps = { origin: {} };
     for (const action of ["", "rerun", "done:", "done:abc", "done:0", "done:-1", "done:1.5", undefined, 42]) {
       expect(widgetAction(db, { action }, deps)).toEqual({ status: 400, body: { ok: false, error: "unknown action" } });
     }
     expect(widgetAction(db, { action: "done:999" }, deps)).toEqual({ status: 404, body: { ok: false, error: "no such task" } });
-    expect(widgetAction(db, { action: `done:${dropped.id}` }, deps)).toMatchObject({ status: 409, body: { ok: false } });
-    expect(getTodo(db, dropped.id)!.status).toBe("dropped");
   });
 
   test("add: a task with the add row's defaults; empty or too long is refused", () => {
     const db = openDb(":memory:");
-    const deps = { change: change(db), origin: { caller: "space" } };
+    const deps = { origin: { caller: "space" } };
     const r = widgetAction(db, { action: "add", value: "  Buy   milk " }, deps);
     expect(r).toMatchObject({ status: 201, body: { ok: true, message: { en: "Added", zh: "已添加" } } });
     const t = getTodo(db, (r.body as { todo: { id: number } }).todo.id)!;
@@ -178,6 +165,7 @@ describe("widget actions", () => {
     for (const value of [undefined, "", "   ", 12]) expect(widgetAction(db, { action: "add", value }, deps)).toEqual({ status: 400, body: { ok: false, error: "a task needs a title" } });
     expect(widgetAction(db, { action: "add", value: "x".repeat(ADD_MAX) }, deps).body.ok).toBe(true);
     expect(widgetAction(db, { action: "add", value: "x".repeat(ADD_MAX + 1) }, deps)).toMatchObject({ status: 400, body: { ok: false } });
-    expect(widgetPayload(db, { now, timezone: tz }).items).toHaveLength(2);
+    // A new task is open, not in review: it is not on this card.
+    expect(widgetPayload(db, { now, timezone: tz }).items).toHaveLength(0);
   });
 });
