@@ -74,8 +74,38 @@ describe("service", () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
     expect((await j("/api/widget")).body).toEqual({
       ok: true, items: [], asOf: "2026-09-22T02:30:00.000Z", staleAfter: 600,
-      blocks: [{ type: "metric", label: { en: "Due by today", zh: "今天到期" }, value: 0, caption: { en: "Nothing open", zh: "清单已清空" }, tone: "neutral", url: "/" }],
+      blocks: [
+        { type: "metric", label: { en: "Awaiting review", zh: "待验收" }, value: 0, caption: { en: "Nothing to review", zh: "没有待验收的任务" }, url: "/?view=review" },
+        { type: "trend", label: { en: "Done, last 7 days", zh: "近 7 天完成" }, style: "bar", points: [
+          { t: "2026-09-16", v: 0 }, { t: "2026-09-17", v: 0 }, { t: "2026-09-18", v: 0 }, { t: "2026-09-19", v: 0 }, { t: "2026-09-20", v: 0 }, { t: "2026-09-21", v: 0 }, { t: "2026-09-22", v: 0 },
+        ], caption: { en: "0 completed", zh: "共完成 0" } },
+      ],
+      actions: [{ id: "add", kind: "input", label: { en: "Add", zh: "添加" }, placeholder: { en: "Add a task…", zh: "添加待办…" } }],
     });
+  });
+  test("widget actions: POST /api/widget only with ai-space's header, JSON, and no foreign Origin", async () => {
+    const post = (b: unknown, headers: Record<string, string> = {}) => j("/api/widget", { method: "POST", body: JSON.stringify(b), headers: { "x-space-widget-action": "1", ...headers } });
+    const add = await post({ action: "add", value: "Widget task" });
+    expect(add.status).toBe(201);
+    expect(add.body).toMatchObject({ ok: true, message: { en: "Added", zh: "已添加" } });
+    const id = (add.body.todo as Todo).id;
+    // Open, so not on the review card, and the card's check does not complete it.
+    expect((await post({ action: `done:${id}` })).body).toEqual({ ok: false, error: "not awaiting review" });
+    await j(`/api/todos/${id}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) });
+    const card = (await j("/api/widget")).body as { blocks: { action?: { id: string } }[] };
+    expect(card.blocks.some((b) => b.action?.id === `done:${id}`)).toBe(true);
+    expect((await post({ action: `done:${id}` })).body).toMatchObject({ ok: true, message: { en: "Accepted", zh: "已验收" } });
+    expect((await post({ action: `done:${id}` })).body).toMatchObject({ ok: true });
+    expect((await post({ action: "nope" })).body).toEqual({ ok: false, error: "unknown action" });
+    expect((await post({ action: "add", value: "" })).body).toMatchObject({ ok: false });
+    // Without the header (a plain browser form or fetch), with another site's Origin, or not JSON: refused, nothing written.
+    const before = ((await j("/api/todos?status=all")).body.todos as unknown[]).length;
+    expect((await j("/api/widget", { method: "POST", body: JSON.stringify({ action: "add", value: "x" }) })).status).toBe(403);
+    expect((await post({ action: "add", value: "x" }, { origin: "https://evil.test" })).status).toBe(403);
+    const form = await fetch(`${base}/api/widget`, { method: "POST", body: "action=add&value=x", headers: { "content-type": "application/x-www-form-urlencoded", "x-space-widget-action": "1" } });
+    expect(form.status).toBe(415);
+    expect(((await j("/api/todos?status=all")).body.todos as unknown[]).length).toBe(before);
+    await j(`/api/todos/${id}`, { method: "DELETE" });
   });
   test("crud", async () => {
     const c = await j("/api/todos", { method: "POST", body: JSON.stringify({ title: " 买牛奶 ", due: "2026-09-23", tags: "购物", priority: 1 }) });
@@ -90,8 +120,8 @@ describe("service", () => {
     const list = await j("/api/todos");
     expect((list.body.todos as Todo[]).length).toBe(1);
     expect(list.body.tags).toEqual([{ tag: "购物", n: 1 }]);
-    const w = await j("/api/widget");
-    expect((w.body.items as { text: string; url: string }[])[0]).toMatchObject({ text: "▶ 买牛奶 · 2026-09-23", url: `https://todo.test/?todo=${todo.id}` });
+    // The panel card lists tasks in review only; this one is in progress.
+    expect((await j("/api/widget")).body.items).toEqual([]);
     expect((await j("/api/todos/999")).status).toBe(404);
   });
   test("parse: free text becomes drafts through the model service with the app token", async () => {
@@ -299,7 +329,7 @@ describe("service", () => {
   });
 });
 
-test("defer through chat and CLI, filter through API, omit from widget, then restore", async () => {
+test("defer through chat and CLI, filter through API, then restore", async () => {
   const db = openDb(":memory:");
   const { server } = createServer({ db, port: 0, web: false });
   const url = `http://127.0.0.1:${server.port}`;
@@ -321,7 +351,6 @@ test("defer through chat and CLI, filter through API, omit from widget, then res
     const applied = await request("/api/ai/apply", { text: '```todo-actions\n' + JSON.stringify([{ op: "defer", id: todo.id }]) + '\n```' });
     expect(JSON.stringify(applied)).toContain('"deferred"');
     expect((await request("/api/todos")).todos).toEqual([]);
-    expect((await request("/api/widget")).items).toEqual([]);
     const held = await request("/api/todos?status=deferred&tag=later&project=Later");
     expect(held.todos.map((t: Todo) => t.id)).toEqual([todo.id]);
     expect(held.tags).toEqual([{ tag: "later", n: 1 }]);
@@ -329,7 +358,6 @@ test("defer through chat and CLI, filter through API, omit from widget, then res
     expect(await cli("list", "--deferred")).toContain("Deferred integration");
     await cli("reopen", String(todo.id));
     expect((await request("/api/todos")).todos).toHaveLength(2);
-    expect((await request("/api/widget")).items).toHaveLength(2);
     await cli("defer", String(child.id));
     expect((await request("/api/todos")).todos.map((t: Todo) => t.id)).toEqual([todo.id]);
     const detail = await request(`/api/todos/${todo.id}`);

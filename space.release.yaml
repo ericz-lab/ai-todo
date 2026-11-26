@@ -20,7 +20,7 @@ i18n:
     agents:
       planner: { title: 规划师, description: 从命令行读清单、加任务、标完成，帮你安排一天。 }
     widgets:
-      next: { title: 待办 · 接下来 }
+      next: { title: 待办 · 待验收 }
 
 requires:
   spaceApi: 1
@@ -157,7 +157,7 @@ skills:
 # Panel card: what is due by today, the next todos and the week's completions (items + blocks).
 widgets:
   - name: next
-    title: Todo · Up Next
+    title: Todo · Review
     kind: items
     source: /api/widget
     link: /
