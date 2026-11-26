@@ -6,24 +6,27 @@
  * a mention in the caption. Every number is counted from the store, nothing estimated.
  */
 import type { Database } from "bun:sqlite";
-import { countTodos, listTodos } from "./db.ts";
+import { cleanDraft, countTodos, createTodo, getTodo, listTodos, reviewTodo } from "./db.ts";
 import { addDays, localClock } from "./dates.ts";
-import type { Todo } from "./types.ts";
+import type { Patch, Source, Todo } from "./types.ts";
 
 export { localClock };
 
 type Text = { en: string; zh: string };
 type Tone = "positive" | "negative" | "warning" | "neutral";
+/** A widget action (ai-space widget interactions, v1): block level `check` | `button`, card level `input` | `button`. */
+export type BlockAction = { id: string; kind: "check" | "button"; label: Text };
+export type CardAction = { id: string; kind: "input" | "button"; label: Text; placeholder?: Text };
 export type Block =
   | { type: "metric"; label: Text; value: number | null; caption?: Text; tone?: Tone; url?: string }
-  | { type: "status"; label: string; value: Text; tone?: Tone; url?: string }
+  | { type: "status"; label: string; value: Text; tone?: Tone; url?: string; action?: BlockAction }
   | { type: "trend"; label: Text; style: "bar" | "line"; points: { t: string; v: number | null }[]; caption?: Text; url?: string };
 
-export type WidgetPayload = { ok: true; items: { text: string; url?: string; time: string }[]; asOf: string; staleAfter: number; blocks: Block[] };
+export type WidgetPayload = { ok: true; items: { text: string; url?: string; time: string }[]; asOf: string; staleAfter: number; blocks: Block[]; actions: CardAction[] };
 
-/** Rows that are tasks: the first ones before the trend, the rest after it. */
+/** Rows that are tasks: the first ones before the trend, the rest after it (eight at most, each with its check). */
 const ROWS_BEFORE_TREND = 3;
-const ROWS_AFTER_TREND = 2;
+const ROWS_AFTER_TREND = 5;
 const TREND_DAYS = 7;
 /** The panel refreshes every two minutes; ten without a fresh answer means the service is gone. */
 export const STALE_AFTER_S = 600;
@@ -65,7 +68,52 @@ function taskRow(t: Todo, clock: string): Block {
     value: join(parts),
     tone: state === "overdue" ? "negative" : state === "today" ? "warning" : "neutral",
     url: `/?todo=${t.id}`,
+    action: { id: `${DONE_PREFIX}${t.id}`, kind: "check", label: { en: "Mark done", zh: "标记完成" } },
   };
+}
+
+const DONE_PREFIX = "done:";
+/** The card's one input: a task titled with what the person typed, as the page's add row makes it in the 全部 view. */
+export const ADD_ACTION: CardAction = { id: "add", kind: "input", label: { en: "Add", zh: "添加" }, placeholder: { en: "Add a task…", zh: "添加待办…" } };
+/** The page's add row takes 300 characters (`cleanTitle` keeps as many); the widget refuses more instead of cutting. */
+export const ADD_MAX = 300;
+
+export type ActionAnswer = { status: number; body: { ok: true; message?: Text; todo?: Todo } | { ok: false; error: string } };
+/**
+ * POST /api/widget, an action the card declared (ai-space widget interactions v1): body `{ action, value? }`.
+ * `done:<id>` finishes the task the way the page's row check does (`change` is the service's `changeTodo`;
+ * a task in review is accepted, as the row's check does there); one already done answers ok. `add` creates
+ * a task titled `value` with the page's add-row defaults of the 全部 view (no due date, project or tag).
+ * `origin` goes into the event (`via: widget`, the caller when ai-space names one).
+ */
+export function widgetAction(
+  db: Database,
+  b: Record<string, unknown>,
+  deps: { change: (id: number, patch: Patch, src: Source, origin: Record<string, unknown>) => Todo | null; origin: Record<string, unknown> },
+): ActionAnswer {
+  const action = typeof b.action === "string" ? b.action : "";
+  const origin = { via: "widget", ...deps.origin };
+  const unknown: ActionAnswer = { status: 400, body: { ok: false, error: "unknown action" } };
+  if (action === ADD_ACTION.id) {
+    const value = typeof b.value === "string" ? b.value.replace(/\s+/g, " ").trim() : "";
+    if (!value) return { status: 400, body: { ok: false, error: "a task needs a title" } };
+    if (value.length > ADD_MAX) return { status: 400, body: { ok: false, error: `a title is at most ${ADD_MAX} characters` } };
+    const todo = createTodo(db, cleanDraft({ title: value }), "manual", origin);
+    return { status: 201, body: { ok: true, message: { en: "Added", zh: "已添加" }, todo } };
+  }
+  if (action.startsWith(DONE_PREFIX)) {
+    const raw = action.slice(DONE_PREFIX.length);
+    const id = /^[1-9]\d{0,15}$/.test(raw) ? Number(raw) : null;
+    if (!id) return unknown;
+    const todo = getTodo(db, id);
+    if (!todo) return { status: 404, body: { ok: false, error: "no such task" } };
+    if (todo.status === "done") return { status: 200, body: { ok: true, message: { en: "Already done", zh: "已完成" }, todo } };
+    if (todo.status === "dropped") return { status: 409, body: { ok: false, error: "the task was dropped" } };
+    const after = todo.status === "review" ? reviewTodo(db, id, "accept", undefined, "manual") : deps.change(id, { status: "done" }, "manual", origin);
+    if (!after) return { status: 404, body: { ok: false, error: "no such task" } };
+    return { status: 200, body: { ok: true, message: { en: "Done", zh: "已完成" }, todo: after } };
+  }
+  return unknown;
 }
 
 /**
@@ -135,5 +183,5 @@ export function widgetPayload(db: Database, opts: { now: Date; timezone: string;
     ? [hero, ...reviewRow, ...rows.slice(0, ROWS_BEFORE_TREND), trend, ...rows.slice(ROWS_BEFORE_TREND, ROWS_BEFORE_TREND + ROWS_AFTER_TREND)]
     : done ? [hero, ...reviewRow, trend] : [hero, ...reviewRow];
 
-  return { ok: true, items, asOf: now.toISOString(), staleAfter: STALE_AFTER_S, blocks };
+  return { ok: true, items, asOf: now.toISOString(), staleAfter: STALE_AFTER_S, blocks, actions: [ADD_ACTION] };
 }

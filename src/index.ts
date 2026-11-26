@@ -26,7 +26,7 @@ import {
 } from "./db.ts";
 import { itemState, type CardItemState } from "./cards.ts";
 import { STATUSES, type Action, type Draft, type Patch, type Run, type Source, type Status, type Todo } from "./types.ts";
-import { completionsByDay, widgetPayload } from "./widget.ts";
+import { completionsByDay, widgetAction, widgetPayload } from "./widget.ts";
 import { createSweeper, listSweeps, SWEEP_MAX_RUNS, type SweepTrigger } from "./sweep.ts";
 
 export interface ServerOptions {
@@ -450,6 +450,24 @@ export function createServer(opts: ServerOptions) {
   };
 
   const widget = () => widgetPayload(db, { now: now(), timezone: defaultTz, publicBase });
+  /**
+   * POST /api/widget: an action of the card (ai-space widget interactions v1), which ai-space sends
+   * server-side to the widget's `source` with `x-space-widget-action: 1`. The route is on the same footing
+   * as the page's other writes (loopback, the edge holds the login), and narrower: the header is required
+   * (a cross-site form cannot set it and a cross-site fetch with it needs a preflight this app never
+   * grants), the body must be JSON, and a browser's Origin must be this host, as for /api/transfer.
+   */
+  const widgetPost = async (req: Request): Promise<Response> => {
+    if (req.headers.get("x-space-widget-action") !== "1") return fail("widget actions come from ai-space", 403);
+    if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? "")) return fail("a JSON body is required", 415);
+    const origin = req.headers.get("origin");
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    try { if (origin && new URL(origin).host !== host) return fail("writes must come from this app's page", 403); } catch { return fail("writes must come from this app's page", 403); }
+    try {
+      const r = widgetAction(db, await body(req), { change: changeTodo, origin: caller(req) });
+      return json(r.body, r.status);
+    } catch (e) { return fail((e as Error).message); }
+  };
 
   // ---- the scheduled sweep (src/sweep.ts): its `do` verdicts run through startExecution, like the page's AI 执行
   const sweeper = createSweeper({
@@ -561,7 +579,7 @@ export function createServer(opts: ServerOptions) {
       "/": opts.web === false ? () => new Response("no page", { status: 404 }) : index,
       "/healthz": () => new Response("ok"),
       "/icon.png": () => new Response(Bun.file(Bun.fileURLToPath(new URL("../icon.png", import.meta.url)))),
-      "/api/widget": (req) => json(widget(), 200, req),
+      "/api/widget": { GET: (req) => json(widget(), 200, req), POST: widgetPost },
       // The machines this page shows: this one, then the peers running ai-todo (on a hub), each marked online or not.
       "/api/execute/models": { GET: executeModels },
       "/api/machines": async () => json({ ok: true, ...(await machines()) }),
